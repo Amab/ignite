@@ -3,34 +3,73 @@ ignite.engine
 
 Main module of the library containing:
 
-- :class:`~ignite.engine.engine.Engine` - abstraction that loops provided data, executes a processing function and returns a result
-- :class:`~ignite.engine.events.Events` - events triggered by the :class:`~ignite.engine.engine.Engine` during execution
-- :class:`~ignite.engine.events.State` - object to pass internal and user-defined data between event handlers
-
-and helper methods:
-
-- :meth:`~ignite.engine.create_supervised_trainer` - creates single model/optimizer/criterion supervised trainer
-- :meth:`~ignite.engine.create_supervised_evaluator` - creates single model supervised evaluation engine
-
-
-More details about those structures can be found in :doc:`concepts`.
-
+ignite.engine.engine
+--------------------
 
 .. currentmodule:: ignite.engine.engine
 
-.. autoclass:: Engine
-   :members:
+.. autosummary::
+    :nosignatures:
+    :toctree: generated
 
-.. autofunction:: ignite.engine.create_supervised_trainer
+    Engine
 
-.. autofunction:: ignite.engine.create_supervised_evaluator
+ignite.engine.events
+--------------------
 
+.. currentmodule:: ignite.engine.events
+
+.. autosummary::
+    :nosignatures:
+    :toctree: generated
+
+    CallableEventWithFilter
+    EventEnum
+    Events
+    EventsList
+    State
+    RemovableEventHandle
+
+ignite.engine.deterministic
+---------------------------
+Helper methods for deterministic training
+
+.. currentmodule:: ignite.engine.deterministic
+
+.. autosummary::
+    :nosignatures:
+    :toctree: generated
+
+    DeterministicEngine
+    ReproducibleBatchSampler
+    keep_random_state
+    update_dataloader
+
+helper methods to define supervised trainer and evaluator
+---------------------------------------------------------
+
+.. currentmodule:: ignite.engine
+
+.. autosummary::
+    :nosignatures:
+    :toctree: generated
+
+    create_supervised_trainer
+    create_supervised_evaluator
+    supervised_training_step
+    supervised_training_step_amp
+    supervised_training_step_apex
+    supervised_training_step_tpu
+    supervised_evaluation_step
+    supervised_evaluation_step_amp
+
+.. tip:: More details about those structures can be found in :doc:`concepts`.
 
 Resuming the training
 ---------------------
 
 It is possible to resume the training from a checkpoint and approximately reproduce original run's behaviour.
-Using Ignite, this can be easily done using :class:`~ignite.handlers.Checkpoint` handler. Engine provides two methods
+Using Ignite, this can be easily done using :class:`~ignite.handlers.checkpoint.Checkpoint` handler. Engine provides two methods
 to serialize and deserialize its internal state :meth:`~ignite.engine.engine.Engine.state_dict` and
 :meth:`~ignite.engine.engine.Engine.load_state_dict`. In addition to serializing model, optimizer, lr scheduler etc user can
 store the trainer and then resume the training. For example:
@@ -80,39 +119,20 @@ from iteration.
 
 Complete examples that resumes the training from a checkpoint can be found here:
 
-- `save/resume MNIST <https://github.com/pytorch/ignite/tree/master/examples/mnist#training-save--resume>`_
-- `save/resume Distributed CIFAR10 <https://github.com/pytorch/ignite/tree/master/examples/contrib/cifar10#check-resume-training>`_
-
-
-ignite.engine.events
---------------------
-
-.. currentmodule:: ignite.engine.events
-
-.. autoclass:: Events
-   :members:
-
-.. autoclass:: State
-
-.. autoclass:: RemovableEventHandle
-   :members:
-   :undoc-members:
-
-
-ignite.engine.deterministic
----------------------------
+- `save/resume MNIST <https://github.com/pytorch/ignite/tree/master/examples/mnist#user-content-training-save--resume>`_
+- `save/resume Distributed CIFAR10 <https://github.com/pytorch/ignite/tree/master/examples/contrib/cifar10#user-content-check-resume-training>`_
 
 Deterministic training
-``````````````````````
+----------------------
 
 In general, it is rather difficult task to achieve deterministic and reproducible trainings as it relies on multiple
-aspects, e.g. data version, code version, software environment, hardware etc. According to `PyTorch documentation <https://pytorch.org/docs/stable/notes/randomness.html>`_:
+aspects, e.g. data version, code version, software environment, hardware etc. According to `PyTorch note on randomness <https://pytorch.org/docs/stable/notes/randomness.html>`_:
 there are some steps to take in order to make computations deterministic on your specific problem on one specific
 platform and PyTorch release:
 
 - setup random state seed
 
-- set `cudnn to deterministic <https://pytorch.org/docs/stable/notes/randomness.html#cudnn>`_ if applicable
+- set `cudnn to deterministic <https://pytorch.org/docs/stable/notes/randomness.html#cuda-convolution-benchmarking>`_ if applicable
 
 By default, these two options can be enough to run and rerun experiments in a deterministic way. Ignite's engine does not impact this behaviour.
 
@@ -122,13 +142,6 @@ to ensure that model sees the same data for a given epoch:
 
 - :class:`~ignite.engine.deterministic.DeterministicEngine`
 - :class:`~ignite.engine.deterministic.ReproducibleBatchSampler`
-
-
-.. currentmodule:: ignite.engine.deterministic
-
-.. automodule:: ignite.engine.deterministic
-   :members:
-
 
 Dataflow synchronization
 ------------------------
@@ -202,8 +215,8 @@ We can see that the data samples are exactly the same between original and resum
 Complete examples that simulates a crash on a defined iteration and resumes the training from a checkpoint can be found
 here:
 
-- `save/resume MNIST <https://github.com/pytorch/ignite/tree/master/examples/mnist#training-save--resume>`_
-- `save/resume Distributed CIFAR10 <https://github.com/pytorch/ignite/tree/master/examples/contrib/cifar10#check-resume-training>`_
+- `save/resume MNIST <https://github.com/pytorch/ignite/tree/master/examples/mnist#user-content-training-save--resume>`_
+- `save/resume Distributed CIFAR10 <https://github.com/pytorch/ignite/tree/master/examples/contrib/cifar10#user-content-check-resume-training>`_
 
 
 .. Note ::
@@ -275,4 +288,3 @@ here:
             # handler synchronizes the random state
             torch.manual_seed(12)
             a = torch.rand(1)
-

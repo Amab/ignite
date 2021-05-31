@@ -5,7 +5,7 @@ from typing import Callable, Union
 import torch
 
 from ignite.engine import Engine
-from ignite.utils import apply_to_type
+from ignite.utils import apply_to_type, setup_logger
 
 __all__ = ["TerminateOnNan"]
 
@@ -18,7 +18,7 @@ class TerminateOnNan:
     `[1.23, torch.tensor(...), torch.tensor(float('nan'))]` the handler will stop the training.
 
     Args:
-        output_transform (callable, optional): a callable that is used to transform the
+        output_transform: a callable that is used to transform the
             :class:`~ignite.engine.engine.Engine`'s ``process_function``'s output into a number or `torch.tensor`
             or collection of them. This can be useful if, for example, you have a multi-output model and
             you want to check one or multiple values of the output.
@@ -33,14 +33,14 @@ class TerminateOnNan:
     """
 
     def __init__(self, output_transform: Callable = lambda x: x):
-        self.logger = logging.getLogger(__name__ + "." + self.__class__.__name__)
+        self.logger = setup_logger(__name__ + "." + self.__class__.__name__)
         self.logger.addHandler(logging.StreamHandler())
         self._output_transform = output_transform
 
     def __call__(self, engine: Engine) -> None:
         output = self._output_transform(engine.state.output)
 
-        def raise_error(x: Union[numbers.Number, torch.Tensor]) -> None:
+        def raise_error(x: Union[float, torch.Tensor]) -> None:
 
             if isinstance(x, numbers.Number):
                 x = torch.tensor(x)
@@ -51,7 +51,5 @@ class TerminateOnNan:
         try:
             apply_to_type(output, (numbers.Number, torch.Tensor), raise_error)
         except RuntimeError:
-            self.logger.warning(
-                "{}: Output '{}' contains NaN or Inf. Stop training".format(self.__class__.__name__, output)
-            )
+            self.logger.warning(f"{self.__class__.__name__}: Output '{output}' contains NaN or Inf. Stop training")
             engine.terminate()

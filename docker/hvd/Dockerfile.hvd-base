@@ -1,31 +1,45 @@
 # Multi-stage build
 # Dockerfile.hvd-base
-FROM pytorch/pytorch:1.6.0-cuda10.1-cudnn7-devel as builder
 
-LABEL description="Latest PyTorch, Ignite and Horovod"
+ARG PTH_VERSION
+
+FROM pytorch/pytorch:${PTH_VERSION}-devel as builder
+
+ARG HVD_VERSION
 
 # Build Horovod
 RUN apt-get update && apt-get install -y git && \
-        git clone --recursive --depth 1 --branch v0.20.0 https://github.com/horovod/horovod.git /horovod && \
-        conda install -y cmake=3.16 nccl=2.7 -c conda-forge && \
+        git clone --recursive --depth 1 --branch ${HVD_VERSION} https://github.com/horovod/horovod.git /horovod && \
+        conda install -y cmake nccl=2.8 -c conda-forge && \
         cd /horovod && \
         HOROVOD_GPU_OPERATIONS=NCCL HOROVOD_NCCL_LINK=SHARED HOROVOD_WITHOUT_MPI=1 HOROVOD_WITH_PYTORCH=1 pip wheel --no-cache-dir . && \
         rm -rf /var/lib/apt/lists/*
 
 # Build runtime image
-FROM pytorch/pytorch:1.6.0-cuda10.1-cudnn7-runtime
+FROM pytorch/pytorch:${PTH_VERSION}-runtime
 
 # Install tzdata / git
 RUN apt-get update && \
-    ln -fs /usr/share/zoneinfo/America/New_York /etc/localtime && \
-    apt-get install -y tzdata && \
+    ln -fs /usr/share/zoneinfo/Europe/Paris /etc/localtime && \
+    apt-get -y install --no-install-recommends tzdata git && \
     dpkg-reconfigure --frontend noninteractive tzdata && \
-    apt-get -y install --no-install-recommends git && \
+    apt-get autoremove -y && \
+    apt-get clean -y && \
     rm -rf /var/lib/apt/lists/*
 
 # Ignite main dependencies
-RUN pip install tensorboardX tensorboard trains tqdm && \
-    pip install pytorch-ignite
+RUN pip install --upgrade --no-cache-dir pytorch-ignite \
+                                         tensorboard \
+                                         tqdm \
+                                         fire
+
+# Replace pillow with pillow-simd
+RUN apt-get update && apt-get -y install --no-install-recommends g++ && \
+    pip uninstall -y pillow && \
+    CC="cc -mavx2" pip install --upgrade --no-cache-dir --force-reinstall pillow-simd && \
+    apt-get remove -y g++ && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
 # Checkout Ignite examples only
 RUN mkdir -p pytorch-ignite-examples && \
@@ -34,16 +48,17 @@ RUN mkdir -p pytorch-ignite-examples && \
     git config core.sparsecheckout true && \
     echo examples >> .git/info/sparse-checkout && \
     git remote add -f origin https://github.com/pytorch/ignite.git && \
-    git pull origin master
+    git pull origin master && \
+    # rm very large .git folder
+    rm -rf .git
 
 # Horovod
-RUN conda install -y nccl=2.7 -c conda-forge
+RUN conda install -y nccl=2.8 -c conda-forge
+
 ENV LD_LIBRARY_PATH=/opt/conda/lib:$LD_LIBRARY_PATH
+
 COPY --from=builder /horovod/horovod-*.whl /horovod/
+
 RUN cd /horovod && \
     pip install --no-cache-dir horovod-*.whl && \
     rm -fr /horovod
-
-WORKDIR /workspace
-
-ENTRYPOINT ["/bin/bash"]

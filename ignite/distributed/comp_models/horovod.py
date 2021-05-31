@@ -1,5 +1,5 @@
-import os
-from typing import Callable, Mapping, Optional, Tuple
+import warnings
+from typing import Any, Callable, Mapping, Optional, Tuple, cast
 
 import torch
 
@@ -33,7 +33,7 @@ if has_hvd_support:
         available_backends = (HOROVOD,)
 
         @staticmethod
-        def _get_hvd_rank():
+        def _get_hvd_rank() -> int:
             try:
                 rank = hvd.rank()
             except ValueError as e:
@@ -43,41 +43,48 @@ if has_hvd_support:
         @staticmethod
         def create_from_context() -> Optional["_HorovodDistModel"]:
             rank = _HorovodDistModel._get_hvd_rank()
-            if not (has_hvd_support and rank > -1):
+            # hvd must be initialized
+            if not rank > -1:
                 return None
             return _HorovodDistModel()
 
         @staticmethod
-        def create_from_backend(backend: str, **kwargs) -> "_HorovodDistModel":
+        def create_from_backend(backend: str = HOROVOD, **kwargs: Any) -> "_HorovodDistModel":
             if backend not in _HorovodDistModel.available_backends:
-                raise ValueError("Backend should be one of '{}'".format(_HorovodDistModel.available_backends))
+                raise ValueError(f"Backend should be one of '{_HorovodDistModel.available_backends}'")
 
             rank = _HorovodDistModel._get_hvd_rank()
-            if has_hvd_support and rank > -1:
+            # hvd must be not initialized
+            if rank > -1:
                 raise RuntimeError("Can not re-initialize Horovod if it is already initialized")
-            return _HorovodDistModel(do_init=True, **kwargs)
+            return _HorovodDistModel(backend, **kwargs)
 
-        def __init__(self, do_init=False, **kwargs):
+        def __init__(self, backend: Optional[str] = None, **kwargs: Any) -> None:
             """This is a private method. Please, use `create_from_backend` or `create_from_context`
             """
             super(_HorovodDistModel, self).__init__()
-            self._backend = HOROVOD
-            if do_init:
-                comm = kwargs.get("comm", None)
-                hvd.init(comm=comm)
+            if backend is not None:
+                self._create_from_backend(backend, **kwargs)
+            else:
+                self._init_from_context()
 
-            self._local_rank = hvd.local_rank()
-
+        def _create_from_backend(self, backend: str, **kwargs: Any) -> None:
+            self._backend = backend  # type: str
+            comm = kwargs.get("comm", None)
+            hvd.init(comm=comm)
+            self._setup_attrs()
             if torch.cuda.is_available():
-                torch.cuda.set_device(self._local_rank)
+                torch.cuda.set_device(self.get_local_rank())
 
+        def _init_from_context(self) -> None:
+            self._backend = HOROVOD
             self._setup_attrs()
 
-        def _compute_nproc_per_node(self):
+        def _compute_nproc_per_node(self) -> int:
             return hvd.local_size()
 
         def get_local_rank(self) -> int:
-            return self._local_rank
+            return hvd.local_rank()
 
         def get_rank(self) -> int:
             return hvd.rank()
@@ -86,28 +93,33 @@ if has_hvd_support:
             return hvd.size()
 
         def get_nproc_per_node(self) -> int:
-            return self._nproc_per_node
+            return cast(int, self._nproc_per_node)
 
         def get_nnodes(self) -> int:
-            return self._nnodes
+            return cast(int, self._nnodes)
 
         def get_node_rank(self) -> int:
-            return self._node
+            return cast(int, self._node)
 
         def device(self) -> torch.device:
             if torch.cuda.is_available():
                 index = torch.cuda.current_device()
-                return torch.device("cuda:{}".format(index))
+                if index < self.get_local_rank():
+                    warnings.warn(
+                        "Current device index is less than current local rank. "
+                        "Please, make sure to call torch.cuda.set_device(local_rank)."
+                    )
+                return torch.device(f"cuda:{index}")
             return torch.device("cpu")
 
         def backend(self) -> str:
             return self._backend
 
-        def finalize(self):
+        def finalize(self) -> None:
             hvd.shutdown()
 
         @staticmethod
-        def _dist_worker_task_fn(backend, fn, args, kwargs_dict):
+        def _dist_worker_task_fn(backend: str, fn: Callable, args: Tuple, kwargs_dict: Mapping) -> None:
             from ignite.distributed.utils import _set_model, finalize
 
             model = _HorovodDistModel.create_from_backend(backend)
@@ -116,15 +128,15 @@ if has_hvd_support:
             finalize()
 
         @staticmethod
-        def spawn(
+        def spawn(  # type: ignore[override]
             fn: Callable,
             args: Tuple,
             kwargs_dict: Optional[Mapping] = None,
             nproc_per_node: int = 1,
-            hosts=None,
+            hosts: Optional[str] = None,
             backend: str = HOROVOD,
-            **kwargs
-        ):
+            **kwargs: Any,
+        ) -> None:
             c1 = "nnodes" in kwargs and kwargs["nnodes"] > 1
             c2 = "node_rank" in kwargs and kwargs["node_rank"] > 0
             if c1 or c2:
@@ -152,11 +164,27 @@ if has_hvd_support:
             "ADASUM": hvd.mpi_ops.Adasum,
         }
 
+        _manual_reduce_op_map = {"MIN": torch.min, "MAX": torch.max, "PRODUCT": torch.prod}
+
         def _do_all_reduce(self, tensor: torch.Tensor, op: str = "SUM") -> torch.Tensor:
+            if op in self._manual_reduce_op_map:
+                op_fn = self._manual_reduce_op_map[op]
+                return self._do_manual_all_reduce(tensor, op_fn)
             if op not in self._reduce_op_map:
-                raise ValueError("Unsupported reduction operation: '{}'".format(op))
+                raise ValueError(f"Unsupported reduction operation: '{op}'")
             op = self._reduce_op_map[op]
             return hvd.allreduce(tensor, op=op)
+
+        def _do_manual_all_reduce(self, tensor: torch.Tensor, op: Any) -> torch.Tensor:
+            # We have to unsqueeze otherwise tensors will be gathered into a single tensor
+            # without splitting (e.g. [1, 1, 1, 3, 3, 3] instead of [[1, 1, 1], [3, 3, 3]])
+            # and reduction op wont work as expected
+            res = self._do_all_gather(tensor.unsqueeze(0))
+            reduced_res = op(res, dim=0)
+            if isinstance(reduced_res, torch.Tensor):
+                return reduced_res
+            # output can also torch min/max_return_type: (min/max_vals, indices)
+            return reduced_res[0]
 
         def _do_all_gather(self, tensor: torch.Tensor) -> torch.Tensor:
             if tensor.ndimension() == 0:
@@ -166,7 +194,7 @@ if has_hvd_support:
         def _do_broadcast(self, tensor: torch.Tensor, src: int) -> torch.Tensor:
             return hvd.broadcast(tensor, root_rank=src)
 
-        def barrier(self):
+        def barrier(self) -> None:
             # https://github.com/horovod/horovod/issues/159#issuecomment-424834603
             # hvd.allreduce(torch.tensor(0, device=self.device()), name="barrier")
             hvd.allreduce(torch.tensor(0, device="cpu"), name="barrier")

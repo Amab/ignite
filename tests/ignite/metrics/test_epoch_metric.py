@@ -35,11 +35,6 @@ def test_epoch_metric_wrong_setup_or_input():
         output = (torch.rand(4, 3, 1), torch.rand(4, 3))
         em.update(output)
 
-    # Target is not binary
-    with pytest.raises(ValueError, match=r"Targets should be binary"):
-        output = (torch.rand(4, 3), torch.randint(0, 5, size=(4, 3)))
-        em.update(output)
-
     em.reset()
     output1 = (torch.rand(4, 3), torch.randint(0, 2, size=(4, 3), dtype=torch.long))
     em.update(output1)
@@ -183,8 +178,8 @@ def _test_distrib_integration(device=None):
     engine = Engine(update)
 
     def assert_data_fn(all_preds, all_targets):
-        assert all_preds.equal(y_preds), "{} vs {}".format(all_preds.shape, y_preds.shape)
-        assert all_targets.equal(y_true), "{} vs {}".format(all_targets.shape, y_true.shape)
+        assert all_preds.equal(y_preds), f"{all_preds.shape} vs {y_preds.shape}"
+        assert all_targets.equal(y_true), f"{all_targets.shape} vs {y_true.shape}"
         return (all_preds.argmax(dim=1) == all_targets).sum().item()
 
     ep_metric = EpochMetric(assert_data_fn, check_compute_fn=False, device=device)
@@ -198,14 +193,18 @@ def _test_distrib_integration(device=None):
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif(torch.cuda.device_count() < 1, reason="Skip if no GPU")
-def test_distrib_gpu(distributed_context_single_node_nccl):
-    _test_distrib_integration(device="cuda")
+def test_distrib_nccl_gpu(distributed_context_single_node_nccl):
+
+    device = idist.device()
+    _test_distrib_integration(device)
 
 
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
-def test_distrib_cpu(distributed_context_single_node_gloo):
-    _test_distrib_integration(device="cpu")
+def test_distrib_gloo_cpu_or_gpu(distributed_context_single_node_gloo):
+
+    device = idist.device()
+    _test_distrib_integration(device)
 
 
 @pytest.mark.tpu

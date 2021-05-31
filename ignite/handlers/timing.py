@@ -1,5 +1,5 @@
 from time import perf_counter
-from typing import Optional
+from typing import Any, Optional
 
 from ignite.engine import Engine, Events
 
@@ -10,7 +10,7 @@ class Timer:
     """ Timer object can be used to measure (average) time between events.
 
     Args:
-        average (bool, optional): if True, then when ``.value()`` method is called, the returned value
+        average: if True, then when ``.value()`` method is called, the returned value
             will be equal to total time measured, divided by the value of internal counter.
 
     Attributes:
@@ -78,11 +78,8 @@ class Timer:
 
     def __init__(self, average: bool = False):
         self._average = average
-        self._t0 = perf_counter()
 
-        self.total = 0.0
-        self.step_count = 0.0
-        self.running = True
+        self.reset()
 
     def attach(
         self,
@@ -91,24 +88,18 @@ class Timer:
         pause: Events = Events.COMPLETED,
         resume: Optional[Events] = None,
         step: Optional[Events] = None,
-    ):
+    ) -> "Timer":
         """ Register callbacks to control the timer.
 
         Args:
-            engine (Engine):
-                Engine that this timer will be attached to.
-            start (Events):
-                Event which should start (reset) the timer.
-            pause (Events):
-                Event which should pause the timer.
-            resume (Events, optional):
-                Event which should resume the timer.
-            step (Events, optional):
-                Event which should call the `step` method of the counter.
+            engine: Engine that this timer will be attached to.
+            start: Event which should start (reset) the timer.
+            pause: Event which should pause the timer.
+            resume: Event which should resume the timer.
+            step: Event which should call the `step` method of the counter.
 
         Returns:
-            self (Timer)
-
+            this timer
         """
 
         engine.add_event_handler(start, self.reset)
@@ -122,21 +113,29 @@ class Timer:
 
         return self
 
-    def reset(self, *args):
-        self.__init__(self._average)
+    def reset(self, *args: Any) -> "Timer":
+        """Reset the timer to zero."""
+        self._t0 = perf_counter()
+        self.total = 0.0
+        self.step_count = 0.0
+        self.running = True
+
         return self
 
-    def pause(self, *args) -> None:
+    def pause(self, *args: Any) -> None:
+        """Pause the current running timer."""
         if self.running:
             self.total += self._elapsed()
             self.running = False
 
-    def resume(self, *args) -> None:
+    def resume(self, *args: Any) -> None:
+        """Resume the current running timer."""
         if not self.running:
             self.running = True
             self._t0 = perf_counter()
 
     def value(self) -> float:
+        """Return the average timer value."""
         total = self.total
         if self.running:
             total += self._elapsed()
@@ -148,7 +147,8 @@ class Timer:
 
         return total / denominator
 
-    def step(self, *args) -> None:
+    def step(self, *args: Any) -> None:
+        """Increment the timer."""
         self.step_count += 1.0
 
     def _elapsed(self) -> float:

@@ -1,8 +1,12 @@
 # Multi-stage build
-# 1/Building apex with pytorch:1.6.0-cuda10.1-cudnn7-devel
-FROM pytorch/pytorch:1.6.0-cuda10.1-cudnn7-devel AS apex-builder
+# Dockerfile.apex
 
-ARG ARG_TORCH_CUDA_ARCH_LIST="6.0;6.1;6.2;7.0;7.5"
+ARG PTH_VERSION
+
+# 1/Building apex with pytorch:*-devel
+FROM pytorch/pytorch:${PTH_VERSION}-devel AS apex-builder
+
+ARG ARG_TORCH_CUDA_ARCH_LIST="3.5 5.2 6.0 6.1 7.0+PTX 8.0"
 ENV TORCH_CUDA_ARCH_LIST=$ARG_TORCH_CUDA_ARCH_LIST
 
 # Install git
@@ -18,24 +22,34 @@ RUN echo "Setup NVIDIA Apex" && \
     pip wheel --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" .
 
 # 2/ Build the runtime image
-FROM pytorch/pytorch:latest
+FROM pytorch/pytorch:${PTH_VERSION}-runtime
 
-COPY --from=apex-builder /tmp/apex/apex-0.1-cp37-cp37m-linux_x86_64.whl apex-0.1-cp37-cp37m-linux_x86_64.whl
-RUN pip install --no-cache-dir apex-0.1-cp37-cp37m-linux_x86_64.whl && \
-    rm apex-0.1-cp37-cp37m-linux_x86_64.whl
+COPY --from=apex-builder /tmp/apex/apex-*.whl /tmp/apex/
+RUN pip install --no-cache-dir /tmp/apex/apex-*.whl && \
+    rm -fr /tmp/apex
 
 # Install tzdata / git
 RUN apt-get update && \
-    ln -fs /usr/share/zoneinfo/America/New_York /etc/localtime && \
-    apt-get install -y tzdata && \
+    ln -fs /usr/share/zoneinfo/Europe/Paris /etc/localtime && \
+    apt-get -y install --no-install-recommends tzdata git && \
     dpkg-reconfigure --frontend noninteractive tzdata && \
-    apt-get -y install --no-install-recommends git && \
+    apt-get autoremove -y && \
+    apt-get clean -y && \
     rm -rf /var/lib/apt/lists/*
 
 # Ignite main dependencies
 RUN pip install --upgrade --no-cache-dir pytorch-ignite \
                                          tensorboard \
-                                         tqdm
+                                         tqdm \
+                                         fire
+
+# replace pillow with pillow-simd
+RUN apt-get update && apt-get -y install --no-install-recommends g++ && \
+    pip uninstall -y pillow && \
+    CC="cc -mavx2" pip install --upgrade --no-cache-dir --force-reinstall pillow-simd && \
+    apt-get remove -y g++ && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
 # Checkout Ignite examples only
 RUN mkdir -p pytorch-ignite-examples && \
@@ -44,6 +58,6 @@ RUN mkdir -p pytorch-ignite-examples && \
     git config core.sparsecheckout true && \
     echo examples >> .git/info/sparse-checkout && \
     git remote add -f origin https://github.com/pytorch/ignite.git && \
-    git pull origin master
-
-ENTRYPOINT ["/bin/bash"]
+    git pull origin master && \
+    # rm very large .git folder
+    rm -rf .git

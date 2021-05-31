@@ -3,9 +3,18 @@ Ignite Your Networks!
 
 :mod:`ignite` is a high-level library to help with training and evaluating neural networks in PyTorch flexibly and transparently.
 
-.. image:: https://raw.githubusercontent.com/pytorch/ignite/master/assets/tldr/pytorch-ignite-teaser.gif
-   :width: 460
-   :target: https://raw.githubusercontent.com/pytorch/ignite/master/assets/tldr/teaser.py
+.. raw:: html
+
+    <a target="_blank" rel="noopener noreferrer"
+    href="https://colab.research.google.com/github/pytorch/ignite/blob/master/assets/tldr/teaser.ipynb">
+        <img
+            src="https://raw.githubusercontent.com/pytorch/ignite/master/assets/tldr/pytorch-ignite-teaser.gif"
+            width=655
+            height=801
+            alt="pytorch-ignite-teaser"
+            style="width: auto !important; height: auto !important; max-width: 80% !important;"
+        >
+    </a>
 
 *Click on the image to see complete code*
 
@@ -85,7 +94,7 @@ Available pre-built images are :
 - ``pytorchignite/nlp:latest | pytorchignite/hvd-nlp:latest | pytorchignite/msdp-apex-nlp:latest``
 - ``pytorchignite/apex-nlp:latest | pytorchignite/hvd-apex-nlp:latest``
 
-For more details, see `here <https://github.com/pytorch/ignite/tree/master/docker>`_.
+For more details, `check out on GitHub <https://github.com/pytorch/ignite/tree/master/docker>`_.
 
 
 
@@ -137,7 +146,7 @@ Library structure
 .. toctree::
    :maxdepth: 2
    :caption: Contrib Package Reference
-    
+
    contrib/engines
    contrib/metrics
    contrib/handlers
@@ -146,5 +155,5 @@ Library structure
    :maxdepth: 1
    :caption: Team
 
-   about
+   About us <https://pytorch.org/ignite/master/about.html>
    governance

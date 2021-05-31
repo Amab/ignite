@@ -1,18 +1,20 @@
+from typing import Callable, Union
+
 import torch
 
-from ignite.contrib.metrics.regression._base import _BaseRegressionEpoch
+from ignite.metrics import EpochMetric
 
 
-def median_relative_absolute_error_compute_fn(y_pred, y):
+def median_relative_absolute_error_compute_fn(y_pred: torch.Tensor, y: torch.Tensor) -> float:
     e = torch.abs(y.view_as(y_pred) - y_pred) / torch.abs(y.view_as(y_pred) - torch.mean(y))
     return torch.median(e).item()
 
 
-class MedianRelativeAbsoluteError(_BaseRegressionEpoch):
-    r"""
-    Calculates the Median Relative Absolute Error:
+class MedianRelativeAbsoluteError(EpochMetric):
+    r"""Calculates the Median Relative Absolute Error.
 
-    :math:`\text{MdRAE} = \text{MD}_{j=1,n} \left( \frac{|A_j - P_j|}{|A_j - \bar{A}|} \right)`,
+    .. math::
+        \text{MdRAE} = \text{MD}_{j=1,n} \left( \frac{|A_j - P_j|}{|A_j - \bar{A}|} \right)
 
     where :math:`A_j` is the ground truth and :math:`P_j` is the predicted value.
 
@@ -29,7 +31,18 @@ class MedianRelativeAbsoluteError(_BaseRegressionEpoch):
 
     __ https://arxiv.org/abs/1809.03006
 
+    Args:
+        output_transform: a callable that is used to transform the
+            :class:`~ignite.engine.engine.Engine`'s ``process_function``'s output into the
+            form expected by the metric. This can be useful if, for example, you have a multi-output model and
+            you want to compute the metric with respect to one of the outputs.
+            By default, metrics require the output as ``(y_pred, y)`` or ``{'y_pred': y_pred, 'y': y}``.
+        device: optional device specification for internal storage.
     """
 
-    def __init__(self, output_transform=lambda x: x):
-        super(MedianRelativeAbsoluteError, self).__init__(median_relative_absolute_error_compute_fn, output_transform)
+    def __init__(
+        self, output_transform: Callable = lambda x: x, device: Union[str, torch.device] = torch.device("cpu")
+    ):
+        super(MedianRelativeAbsoluteError, self).__init__(
+            median_relative_absolute_error_compute_fn, output_transform=output_transform, device=device
+        )

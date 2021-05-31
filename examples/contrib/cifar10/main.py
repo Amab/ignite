@@ -1,23 +1,21 @@
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 import fire
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import utils
+from torch.cuda.amp import GradScaler, autocast
 
 import ignite
 import ignite.distributed as idist
-from ignite.engine import Events, Engine, create_supervised_evaluator
-from ignite.metrics import Accuracy, Loss
-from ignite.handlers import Checkpoint, DiskSaver
-from ignite.utils import manual_seed, setup_logger
-
 from ignite.contrib.engines import common
 from ignite.contrib.handlers import PiecewiseLinear
-
-import utils
+from ignite.engine import Engine, Events
+from ignite.handlers import Checkpoint, DiskSaver, global_step_from_engine
+from ignite.metrics import Accuracy, Loss
+from ignite.utils import manual_seed, setup_logger
 
 
 def training(local_rank, config):
@@ -35,20 +33,24 @@ def training(local_rank, config):
         if config["stop_iteration"] is None:
             now = datetime.now().strftime("%Y%m%d-%H%M%S")
         else:
-            now = "stop-on-{}".format(config["stop_iteration"])
+            now = f"stop-on-{config['stop_iteration']}"
 
-        folder_name = "{}_backend-{}-{}_{}".format(config["model"], idist.backend(), idist.get_world_size(), now)
+        folder_name = f"{config['model']}_backend-{idist.backend()}-{idist.get_world_size()}_{now}"
         output_path = Path(output_path) / folder_name
         if not output_path.exists():
             output_path.mkdir(parents=True)
         config["output_path"] = output_path.as_posix()
-        logger.info("Output path: {}".format(config["output_path"]))
+        logger.info(f"Output path: {config['output_path']}")
 
         if "cuda" in device.type:
             config["cuda device name"] = torch.cuda.get_device_name(local_rank)
 
-        if config["with_trains"]:
-            from trains import Task
+        if config["with_clearml"]:
+            try:
+                from clearml import Task
+            except ImportError:
+                # Backwards-compatibility for legacy Trains SDK
+                from trains import Task
 
             task = Task.init("CIFAR10-Training", task_name=output_path.stem)
             task.connect_configuration(config)
@@ -75,14 +77,14 @@ def training(local_rank, config):
 
     # Let's now setup evaluator engine to perform model's validation and compute metrics
     metrics = {
-        "accuracy": Accuracy(),
-        "loss": Loss(criterion),
+        "Accuracy": Accuracy(),
+        "Loss": Loss(criterion),
     }
 
     # We define two evaluators as they wont have exactly similar roles:
     # - `evaluator` will save the best model based on validation score
-    evaluator = create_supervised_evaluator(model, metrics=metrics, device=device, non_blocking=True)
-    train_evaluator = create_supervised_evaluator(model, metrics=metrics, device=device, non_blocking=True)
+    evaluator = create_evaluator(model, metrics=metrics, config=config)
+    train_evaluator = create_evaluator(model, metrics=metrics, config=config)
 
     def run_validation(engine):
         epoch = trainer.state.epoch
@@ -101,15 +103,18 @@ def training(local_rank, config):
         evaluators = {"training": train_evaluator, "test": evaluator}
         tb_logger = common.setup_tb_logging(output_path, trainer, optimizer, evaluators=evaluators)
 
-    # Store 3 best models by validation accuracy:
-    common.gen_save_best_models_by_val_score(
-        save_handler=get_save_handler(config),
-        evaluator=evaluator,
-        models={"model": model},
-        metric_name="accuracy",
-        n_saved=3,
-        trainer=trainer,
-        tag="test",
+    # Store 2 best models by validation accuracy starting from num_epochs / 2:
+    best_model_handler = Checkpoint(
+        {"model": model},
+        get_save_handler(config),
+        filename_prefix="best",
+        n_saved=2,
+        global_step_transform=global_step_from_engine(trainer),
+        score_name="test_accuracy",
+        score_function=Checkpoint.get_default_score_fn("Accuracy"),
+    )
+    evaluator.add_event_handler(
+        Events.COMPLETED(lambda *_: trainer.state.epoch > config["num_epochs"] // 2), best_model_handler
     )
 
     # In order to check training resuming we can stop training on a given iteration
@@ -117,15 +122,14 @@ def training(local_rank, config):
 
         @trainer.on(Events.ITERATION_STARTED(once=config["stop_iteration"]))
         def _():
-            logger.info("Stop training on {} iteration".format(trainer.state.iteration))
+            logger.info(f"Stop training on {trainer.state.iteration} iteration")
             trainer.terminate()
 
     try:
         trainer.run(train_loader, max_epochs=config["num_epochs"])
     except Exception as e:
-        import traceback
-
-        print(traceback.format_exc())
+        logger.exception("")
+        raise e
 
     if rank == 0:
         tb_logger.close()
@@ -144,14 +148,15 @@ def run(
     learning_rate=0.4,
     num_warmup_epochs=4,
     validate_every=3,
-    checkpoint_every=200,
+    checkpoint_every=1000,
     backend=None,
     resume_from=None,
     log_every_iters=15,
     nproc_per_node=None,
     stop_iteration=None,
-    with_trains=False,
-    **spawn_kwargs
+    with_clearml=False,
+    with_amp=False,
+    **spawn_kwargs,
 ):
     """Main entry to train an model on CIFAR10 dataset.
 
@@ -168,7 +173,7 @@ def run(
         learning_rate (float): peak of piecewise linear learning rate scheduler. Default, 0.4.
         num_warmup_epochs (int): number of warm-up epochs before learning rate decay. Default, 4.
         validate_every (int): run model's validation every ``validate_every`` epochs. Default, 3.
-        checkpoint_every (int): store training checkpoint every ``checkpoint_every`` iterations. Default, 200.
+        checkpoint_every (int): store training checkpoint every ``checkpoint_every`` iterations. Default, 1000.
         backend (str, optional): backend to use for distributed configuration. Possible values: None, "nccl", "xla-tpu",
             "gloo" etc. Default, None.
         nproc_per_node (int, optional): optional argument to setup number of processes per node. It is useful,
@@ -177,7 +182,8 @@ def run(
         log_every_iters (int): argument to log batch loss every ``log_every_iters`` iterations.
             It can be 0 to disable it. Default, 15.
         stop_iteration (int, optional): iteration to stop the training. Can be used to check resume from checkpoint.
-        with_trains (bool): if True, experiment Trains logger is setup. Default, False.
+        with_clearml (bool): if True, experiment ClearML logger is setup. Default, False.
+        with_amp (bool): if True, enables native automatic mixed precision. Default, False.
         **spawn_kwargs: Other kwargs to spawn run in child processes: master_addr, master_port, node_rank, nnodes
 
     """
@@ -187,6 +193,8 @@ def run(
     del config["spawn_kwargs"]
 
     spawn_kwargs["nproc_per_node"] = nproc_per_node
+    if backend == "xla-tpu" and with_amp:
+        raise RuntimeError("The value of with_amp should be False if backend is xla")
 
     with idist.Parallel(backend=backend, **spawn_kwargs) as parallel:
 
@@ -195,14 +203,15 @@ def run(
 
 def get_dataflow(config):
     # - Get train/test datasets
-    if idist.get_rank() > 0:
-        # Ensure that only rank 0 download the dataset
+    if idist.get_local_rank() > 0:
+        # Ensure that only local rank 0 download the dataset
+        # Thus each node will download a copy of the dataset
         idist.barrier()
 
     train_dataset, test_dataset = utils.get_train_test_datasets(config["data_path"])
 
-    if idist.get_rank() == 0:
-        # Ensure that only rank 0 download the dataset
+    if idist.get_local_rank() == 0:
+        # Ensure that only local rank 0 download the dataset
         idist.barrier()
 
     # Setup data loader also adapted to distributed config: nccl, gloo, xla-tpu
@@ -243,28 +252,33 @@ def initialize(config):
 
 
 def log_metrics(logger, epoch, elapsed, tag, metrics):
-    logger.info(
-        "\nEpoch {} - elapsed: {} - {} metrics:\n {}".format(
-            epoch, elapsed, tag, "\n".join(["\t{}: {}".format(k, v) for k, v in metrics.items()])
-        )
-    )
+    metrics_output = "\n".join([f"\t{k}: {v}" for k, v in metrics.items()])
+    logger.info(f"\nEpoch {epoch} - Evaluation time (seconds): {elapsed:.2f} - {tag} metrics:\n {metrics_output}")
 
 
 def log_basic_info(logger, config):
-    logger.info("Train {} on CIFAR10".format(config["model"]))
-    logger.info("- PyTorch version: {}".format(torch.__version__))
-    logger.info("- Ignite version: {}".format(ignite.__version__))
+    logger.info(f"Train {config['model']} on CIFAR10")
+    logger.info(f"- PyTorch version: {torch.__version__}")
+    logger.info(f"- Ignite version: {ignite.__version__}")
+    if torch.cuda.is_available():
+        # explicitly import cudnn as
+        # torch.backends.cudnn can not be pickled with hvd spawning procs
+        from torch.backends import cudnn
+
+        logger.info(f"- GPU Device: {torch.cuda.get_device_name(idist.get_local_rank())}")
+        logger.info(f"- CUDA version: {torch.version.cuda}")
+        logger.info(f"- CUDNN version: {cudnn.version()}")
 
     logger.info("\n")
     logger.info("Configuration:")
     for key, value in config.items():
-        logger.info("\t{}: {}".format(key, value))
+        logger.info(f"\t{key}: {value}")
     logger.info("\n")
 
     if idist.get_world_size() > 1:
         logger.info("\nDistributed setting:")
-        logger.info("\tbackend: {}".format(idist.backend()))
-        logger.info("\tworld size: {}".format(idist.get_world_size()))
+        logger.info(f"\tbackend: {idist.backend()}")
+        logger.info(f"\tworld size: {idist.get_world_size()}")
         logger.info("\n")
 
 
@@ -281,6 +295,9 @@ def create_trainer(model, optimizer, criterion, lr_scheduler, train_sampler, con
     #    - RunningAverage` on `train_step` output
     #    - Two progress bars on epochs and optionally on iterations
 
+    with_amp = config["with_amp"]
+    scaler = GradScaler(enabled=with_amp)
+
     def train_step(engine, batch):
 
         x, y = batch[0], batch[1]
@@ -290,28 +307,21 @@ def create_trainer(model, optimizer, criterion, lr_scheduler, train_sampler, con
             y = y.to(device, non_blocking=True)
 
         model.train()
-        # Supervised part
-        y_pred = model(x)
-        loss = criterion(y_pred, y)
+
+        with autocast(enabled=with_amp):
+            y_pred = model(x)
+            loss = criterion(y_pred, y)
 
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        # This can be helpful for XLA to avoid performance slow down if fetch loss.item() every iteration
-        if config["log_every_iters"] > 0 and (engine.state.iteration - 1) % config["log_every_iters"] == 0:
-            batch_loss = loss.item()
-            engine.state.saved_batch_loss = batch_loss
-        else:
-            batch_loss = engine.state.saved_batch_loss
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         return {
-            "batch loss": batch_loss,
+            "batch loss": loss.item(),
         }
 
     trainer = Engine(train_step)
-    trainer.state.saved_batch_loss = -1.0
-    trainer.state_dict_user_keys.append("saved_batch_loss")
     trainer.logger = logger
 
     to_save = {"trainer": trainer, "model": model, "optimizer": optimizer, "lr_scheduler": lr_scheduler}
@@ -334,19 +344,46 @@ def create_trainer(model, optimizer, criterion, lr_scheduler, train_sampler, con
     resume_from = config["resume_from"]
     if resume_from is not None:
         checkpoint_fp = Path(resume_from)
-        assert checkpoint_fp.exists(), "Checkpoint '{}' is not found".format(checkpoint_fp.as_posix())
-        logger.info("Resume from a checkpoint: {}".format(checkpoint_fp.as_posix()))
+        assert checkpoint_fp.exists(), f"Checkpoint '{checkpoint_fp.as_posix()}' is not found"
+        logger.info(f"Resume from a checkpoint: {checkpoint_fp.as_posix()}")
         checkpoint = torch.load(checkpoint_fp.as_posix(), map_location="cpu")
         Checkpoint.load_objects(to_load=to_save, checkpoint=checkpoint)
 
     return trainer
 
 
-def get_save_handler(config):
-    if config["with_trains"]:
-        from ignite.contrib.handlers.trains_logger import TrainsSaver
+def create_evaluator(model, metrics, config, tag="val"):
+    with_amp = config["with_amp"]
+    device = idist.device()
 
-        return TrainsSaver(dirname=config["output_path"])
+    @torch.no_grad()
+    def evaluate_step(engine: Engine, batch):
+        model.eval()
+        x, y = batch[0], batch[1]
+        if x.device != device:
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+
+        with autocast(enabled=with_amp):
+            output = model(x)
+        return output, y
+
+    evaluator = Engine(evaluate_step)
+
+    for name, metric in metrics.items():
+        metric.attach(evaluator, name)
+
+    if idist.get_rank() == 0 and (not config["with_clearml"]):
+        common.ProgressBar(desc=f"Evaluation ({tag})", persist=False).attach(evaluator)
+
+    return evaluator
+
+
+def get_save_handler(config):
+    if config["with_clearml"]:
+        from ignite.contrib.handlers.clearml_logger import ClearMLSaver
+
+        return ClearMLSaver(dirname=config["output_path"])
 
     return DiskSaver(config["output_path"], require_empty=False)
 

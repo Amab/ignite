@@ -17,11 +17,14 @@ def test__xla_model():
     available_backends = _XlaDistModel.available_backends
     assert "xla-tpu" in available_backends
 
+    with pytest.raises(ValueError, match=r"Backend should be one of"):
+        _XlaDistModel.create_from_backend("abc")
+
 
 def _test_xla_spawn_fn(local_rank, world_size, device):
     from ignite.distributed.utils import _model
 
-    assert isinstance(_model, _XlaDistModel), "{} vs _XlaDistModel".format(type(_model))
+    assert isinstance(_model, _XlaDistModel), f"{type(_model)} vs _XlaDistModel"
 
     assert _model.get_local_rank() == local_rank
     assert _model.get_world_size() == world_size
@@ -152,10 +155,12 @@ def test__xla_dist_model_create_from_context_in_child_proc(xmp_executor):
 
 def main_fold(fold):
     import time
+
     import torch.nn as nn
     import torch.optim as optim
     import torch_xla.core.xla_model as xm
-    from ignite.engine import Engine, Events
+
+    from ignite.engine import Engine
 
     device = xm.xla_device(fold)
 
@@ -194,9 +199,8 @@ def main_fold(fold):
 @pytest.mark.skipif(not has_xla_support, reason="Skip if no PyTorch XLA package")
 def test__xla_dist_model_run_parallel_n_threads_without_sync():
     # tests issue : https://github.com/pytorch/ignite/issues/1096
-    from joblib import Parallel, delayed
-
     import torch_xla.core.xla_model as xm
+    from joblib import Parallel, delayed
 
     devices = xm.get_xla_supported_devices()
     folds = 1

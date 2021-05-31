@@ -8,7 +8,15 @@ import pytest
 import torch
 
 import ignite.distributed as idist
-from ignite.contrib.handlers.neptune_logger import *
+from ignite.contrib.handlers.neptune_logger import (
+    GradsScalarHandler,
+    NeptuneLogger,
+    NeptuneSaver,
+    OptimizerParamsHandler,
+    OutputHandler,
+    WeightsScalarHandler,
+    global_step_from_engine,
+)
 from ignite.engine import Engine, Events, State
 from ignite.handlers.checkpoint import Checkpoint
 
@@ -256,7 +264,7 @@ def test_weights_scalar_handler(dummy_model_factory):
 
         wrapper(mock_engine, mock_logger, Events.EPOCH_STARTED)
 
-        tag_prefix = "{}/".format(tag) if tag else ""
+        tag_prefix = f"{tag}/" if tag else ""
 
         assert mock_logger.log_metric.call_count == 4
         mock_logger.log_metric.assert_has_calls(
@@ -329,7 +337,7 @@ def test_grads_scalar_handler(dummy_model_factory, norm_mock):
 
         wrapper(mock_engine, mock_logger, Events.EPOCH_STARTED)
 
-        tag_prefix = "{}/".format(tag) if tag else ""
+        tag_prefix = f"{tag}/" if tag else ""
 
         mock_logger.log_metric.assert_has_calls(
             [
@@ -508,13 +516,16 @@ def test_no_neptune_client(no_site_packages):
 
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
-def test_distrib_cpu(distributed_context_single_node_gloo):
-    _test_neptune_saver_integration("cpu")
+def test_distrib_gloo_cpu_or_gpu(distributed_context_single_node_gloo):
+
+    device = idist.device()
+    _test_neptune_saver_integration(device)
 
 
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif(torch.cuda.device_count() < 1, reason="Skip if no GPU")
-def test_distrib_gpu(distributed_context_single_node_nccl):
+def test_distrib_nccl_gpu(distributed_context_single_node_nccl):
+
     device = idist.device()
     _test_neptune_saver_integration(device)

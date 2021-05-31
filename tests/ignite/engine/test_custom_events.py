@@ -6,19 +6,7 @@ import torch
 
 import ignite.distributed as idist
 from ignite.engine import Engine, Events
-from ignite.engine.events import CallableEvents, CallableEventWithFilter, EventEnum, EventsList
-
-
-def test_deprecated_callable_events_class():
-    engine = Engine(lambda engine, batch: 0)
-
-    with pytest.warns(DeprecationWarning, match=r"Class ignite\.engine\.events\.CallableEvents is deprecated"):
-
-        class CustomEvents(CallableEvents, Enum):
-            TEST_EVENT = "test_event"
-
-        with pytest.raises(TypeError, match=r"Value at \d of event_names should be a str or EventEnum"):
-            engine.register_events(*CustomEvents)
+from ignite.engine.events import CallableEventWithFilter, EventEnum, EventsList
 
 
 def test_custom_events():
@@ -154,6 +142,9 @@ def test_callable_events_with_wrong_inputs():
     with pytest.raises(ValueError, match=r"Argument every should be integer and greater than zero"):
         Events.ITERATION_STARTED(every=-1)
 
+    with pytest.raises(ValueError, match=r"Argument once should be integer and positive"):
+        Events.ITERATION_STARTED(once=-1)
+
     with pytest.raises(ValueError, match=r"but will be called with"):
         Events.ITERATION_STARTED(event_filter=lambda x: x)
 
@@ -172,7 +163,7 @@ def test_callable_events():
     assert isinstance(Events.ITERATION_STARTED.value, str)
 
     # assert ret in Events
-    assert Events.ITERATION_STARTED.name in "{}".format(ret)
+    assert Events.ITERATION_STARTED.name in f"{ret}"
     # assert ret in State.event_to_attr
 
     ret = Events.ITERATION_STARTED(every=10)
@@ -181,7 +172,7 @@ def test_callable_events():
     assert ret.filter is not None
 
     # assert ret in Events
-    assert Events.ITERATION_STARTED.name in "{}".format(ret)
+    assert Events.ITERATION_STARTED.name in f"{ret}"
     # assert ret in State.event_to_attr
 
     ret = Events.ITERATION_STARTED(once=10)
@@ -190,7 +181,7 @@ def test_callable_events():
     assert ret.filter is not None
 
     # assert ret in Events
-    assert Events.ITERATION_STARTED.name in "{}".format(ret)
+    assert Events.ITERATION_STARTED.name in f"{ret}"
     # assert ret in State.event_to_attr
 
     def _attach(e1, e2):
@@ -464,7 +455,7 @@ def _test_every_event_filter_with_engine_with_dataloader(device):
             data,
             batch_size=batch_size,
             num_workers=num_workers,
-            pin_memory="cuda" in device,
+            pin_memory="cuda" in torch.device(device).type,
             drop_last=True,
             shuffle=True,
         )
@@ -498,16 +489,19 @@ def test_every_event_filter_with_engine_with_dataloader():
 
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
-def test_distrib_cpu(distributed_context_single_node_gloo):
-    _test_every_event_filter_with_engine()
-    _test_every_event_filter_with_engine_with_dataloader("cpu")
+def test_distrib_gloo_cpu_or_gpu(distributed_context_single_node_gloo):
+
+    device = idist.device()
+    _test_every_event_filter_with_engine(device)
+    _test_every_event_filter_with_engine_with_dataloader(device)
 
 
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif(torch.cuda.device_count() < 1, reason="Skip if no GPU")
-def test_distrib_gpu(distributed_context_single_node_nccl):
-    device = "cuda:{}".format(distributed_context_single_node_nccl["local_rank"])
+def test_distrib_nccl_gpu(distributed_context_single_node_nccl):
+
+    device = idist.device()
     _test_every_event_filter_with_engine(device)
     _test_every_event_filter_with_engine_with_dataloader(device)
 
@@ -520,7 +514,7 @@ def test_event_list():
 
     event_list = e1 | e2 | e3
 
-    assert type(event_list) == EventsList
+    assert isinstance(event_list, EventsList)
     assert len(event_list) == 3
     assert event_list[0] == e1
     assert event_list[1] == e2

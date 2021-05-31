@@ -3,7 +3,12 @@ from unittest.mock import MagicMock, call
 import pytest
 import torch
 
-from ignite.contrib.handlers.wandb_logger import *
+from ignite.contrib.handlers.wandb_logger import (
+    OptimizerParamsHandler,
+    OutputHandler,
+    WandBLogger,
+    global_step_from_engine,
+)
 from ignite.engine import Events, State
 
 
@@ -212,6 +217,16 @@ def test_output_handler_with_global_step_from_engine():
     mock_logger.log.assert_has_calls(
         [call({"tag/loss": mock_engine.state.output}, step=mock_another_engine.state.epoch, sync=None)]
     )
+
+
+def test_wandb_close():
+    optimizer = torch.optim.SGD([torch.Tensor(0)], lr=0.01)
+    wrapper = OptimizerParamsHandler(optimizer=optimizer, param_name="lr")
+    mock_logger = MagicMock(spec=WandBLogger)
+    mock_logger.log = MagicMock()
+    mock_engine = MagicMock()
+    wrapper(mock_engine, mock_logger, Events.ITERATION_STARTED)
+    mock_logger.close()
 
 
 @pytest.fixture

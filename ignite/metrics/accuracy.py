@@ -1,4 +1,4 @@
-from typing import Callable, Sequence, Union
+from typing import Callable, Optional, Sequence, Tuple, Union
 
 import torch
 
@@ -16,8 +16,8 @@ class _BaseClassification(Metric):
         device: Union[str, torch.device] = torch.device("cpu"),
     ):
         self._is_multilabel = is_multilabel
-        self._type = None
-        self._num_classes = None
+        self._type = None  # type: Optional[str]
+        self._num_classes = None  # type: Optional[int]
         super(_BaseClassification, self).__init__(output_transform=output_transform, device=device)
 
     def reset(self) -> None:
@@ -31,11 +31,11 @@ class _BaseClassification(Metric):
             raise ValueError(
                 "y must have shape of (batch_size, ...) and y_pred must have "
                 "shape of (batch_size, num_categories, ...) or (batch_size, ...), "
-                "but given {} vs {}.".format(y.shape, y_pred.shape)
+                f"but given {y.shape} vs {y_pred.shape}."
             )
 
         y_shape = y.shape
-        y_pred_shape = y_pred.shape
+        y_pred_shape = y_pred.shape  # type: Tuple[int, ...]
 
         if y.ndimension() + 1 == y_pred.ndimension():
             y_pred_shape = (y_pred_shape[0],) + y_pred_shape[2:]
@@ -78,24 +78,26 @@ class _BaseClassification(Metric):
                 num_classes = 1
         else:
             raise RuntimeError(
-                "Invalid shapes of y (shape={}) and y_pred (shape={}), check documentation."
-                " for expected shapes of y and y_pred.".format(y.shape, y_pred.shape)
+                f"Invalid shapes of y (shape={y.shape}) and y_pred (shape={y_pred.shape}), check documentation."
+                " for expected shapes of y and y_pred."
             )
         if self._type is None:
             self._type = update_type
             self._num_classes = num_classes
         else:
             if self._type != update_type:
-                raise RuntimeError("Input data type has changed from {} to {}.".format(self._type, update_type))
+                raise RuntimeError(f"Input data type has changed from {self._type} to {update_type}.")
             if self._num_classes != num_classes:
-                raise ValueError(
-                    "Input data number of classes has changed from {} to {}".format(self._num_classes, num_classes)
-                )
+                raise ValueError(f"Input data number of classes has changed from {self._num_classes} to {num_classes}")
 
 
 class Accuracy(_BaseClassification):
-    """
-    Calculates the accuracy for binary, multiclass and multilabel data.
+    r"""Calculates the accuracy for binary, multiclass and multilabel data.
+
+    .. math:: \text{Accuracy} = \frac{ TP + TN }{ TP + TN + FP + FN }
+
+    where :math:`\text{TP}` is true positives, :math:`\text{TN}` is true negatives,
+    :math:`\text{FP}` is false positives and :math:`\text{FN}` is false negatives.
 
     - ``update`` must receive output of the form ``(y_pred, y)`` or ``{'y_pred': y_pred, 'y': y}``.
     - `y_pred` must be in the following shape (batch_size, num_categories, ...) or (batch_size, ...).
@@ -117,12 +119,12 @@ class Accuracy(_BaseClassification):
 
 
     Args:
-        output_transform (callable, optional): a callable that is used to transform the
+        output_transform: a callable that is used to transform the
             :class:`~ignite.engine.engine.Engine`'s ``process_function``'s output into the
             form expected by the metric. This can be useful if, for example, you have a multi-output model and
             you want to compute the metric with respect to one of the outputs.
-        is_multilabel (bool, optional): flag to use in multilabel case. By default, False.
-        device (str or torch.device): specifies which device updates are accumulated on. Setting the metric's
+        is_multilabel: flag to use in multilabel case. By default, False.
+        device: specifies which device updates are accumulated on. Setting the metric's
             device to be the same as your ``update`` arguments ensures the ``update`` method is non-blocking. By
             default, CPU.
 
@@ -134,8 +136,6 @@ class Accuracy(_BaseClassification):
         is_multilabel: bool = False,
         device: Union[str, torch.device] = torch.device("cpu"),
     ):
-        self._num_correct = None
-        self._num_examples = None
         super(Accuracy, self).__init__(output_transform=output_transform, is_multilabel=is_multilabel, device=device)
 
     @reinit__is_reduced
@@ -167,7 +167,7 @@ class Accuracy(_BaseClassification):
         self._num_examples += correct.shape[0]
 
     @sync_all_reduce("_num_examples", "_num_correct")
-    def compute(self) -> torch.Tensor:
+    def compute(self) -> float:
         if self._num_examples == 0:
             raise NotComputableError("Accuracy must have at least one example before it can be computed.")
         return self._num_correct.item() / self._num_examples

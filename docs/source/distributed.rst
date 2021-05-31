@@ -7,6 +7,9 @@ Helper module to use distributed settings for multiple backends:
 
 - XLA on TPUs via `pytorch/xla <https://github.com/pytorch/xla>`_
 
+- using `Horovod framework <https://horovod.readthedocs.io/en/stable/>`_ as a backend
+
+
 Distributed launcher and `auto` helpers
 ---------------------------------------
 
@@ -61,18 +64,25 @@ ignite.distributed.auto
 
 .. currentmodule:: ignite.distributed.auto
 
-.. automodule:: ignite.distributed.auto
-    :members:
+.. autosummary::
+    :nosignatures:
+    :toctree: generated
 
+    DistributedProxySampler
+    auto_dataloader
+    auto_model
+    auto_optim
 
 ignite.distributed.launcher
 ---------------------------
 
 .. currentmodule:: ignite.distributed.launcher
 
-.. automodule:: ignite.distributed.launcher
-    :members:
+.. autosummary::
+    :nosignatures:
+    :toctree: generated
 
+    Parallel
 
 ignite.distributed.utils
 ------------------------
@@ -81,6 +91,10 @@ This module wraps common methods to fetch information about distributed configur
 group or spawn multiple processes.
 
 .. currentmodule:: ignite.distributed.utils
+
+.. autosummary::
+    :nosignatures:
+    :autolist:
 
 .. automodule:: ignite.distributed.utils
     :members:

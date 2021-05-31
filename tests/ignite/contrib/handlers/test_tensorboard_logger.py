@@ -5,7 +5,16 @@ from unittest.mock import ANY, MagicMock, call, patch
 import pytest
 import torch
 
-from ignite.contrib.handlers.tensorboard_logger import *
+from ignite.contrib.handlers.tensorboard_logger import (
+    GradsHistHandler,
+    GradsScalarHandler,
+    OptimizerParamsHandler,
+    OutputHandler,
+    TensorboardLogger,
+    WeightsHistHandler,
+    WeightsScalarHandler,
+    global_step_from_engine,
+)
 from ignite.engine import Engine, Events, State
 
 
@@ -265,7 +274,7 @@ def test_weights_scalar_handler(dummy_model_factory):
 
         wrapper(mock_engine, mock_logger, Events.EPOCH_STARTED)
 
-        tag_prefix = "{}/".format(tag) if tag else ""
+        tag_prefix = f"{tag}/" if tag else ""
 
         assert mock_logger.writer.add_scalar.call_count == 4
         mock_logger.writer.add_scalar.assert_has_calls(
@@ -338,7 +347,7 @@ def test_weights_hist_handler(dummy_model_factory):
 
         wrapper(mock_engine, mock_logger, Events.EPOCH_STARTED)
 
-        tag_prefix = "{}/".format(tag) if tag else ""
+        tag_prefix = f"{tag}/" if tag else ""
 
         assert mock_logger.writer.add_histogram.call_count == 4
         mock_logger.writer.add_histogram.assert_has_calls(
@@ -420,7 +429,7 @@ def test_grads_scalar_handler(dummy_model_factory, norm_mock):
 
         wrapper(mock_engine, mock_logger, Events.EPOCH_STARTED)
 
-        tag_prefix = "{}/".format(tag) if tag else ""
+        tag_prefix = f"{tag}/" if tag else ""
 
         mock_logger.writer.add_scalar.assert_has_calls(
             [
@@ -492,7 +501,7 @@ def test_grads_hist_handler(dummy_model_factory):
 
         wrapper(mock_engine, mock_logger, Events.EPOCH_STARTED)
 
-        tag_prefix = "{}/".format(tag) if tag else ""
+        tag_prefix = f"{tag}/" if tag else ""
 
         assert mock_logger.writer.add_histogram.call_count == 4
         mock_logger.writer.add_histogram.assert_has_calls(

@@ -1,5 +1,6 @@
 import os
 
+import numpy as np
 import pytest
 import torch
 
@@ -8,31 +9,57 @@ from ignite.exceptions import NotComputableError
 from ignite.metrics import MeanAbsoluteError
 
 
-def test_zero_div():
+def test_no_update():
     mae = MeanAbsoluteError()
-    with pytest.raises(NotComputableError):
+    with pytest.raises(
+        NotComputableError, match=r"MeanAbsoluteError must have at least one example before it can be computed"
+    ):
         mae.compute()
 
 
 def test_compute():
+
     mae = MeanAbsoluteError()
 
-    y_pred = torch.Tensor([[2.0], [-2.0]])
-    y = torch.zeros(2)
-    mae.update((y_pred, y))
-    assert isinstance(mae.compute(), float)
-    assert mae.compute() == 2.0
+    def _test(y_pred, y, batch_size):
+        mae.reset()
+        if batch_size > 1:
+            n_iters = y.shape[0] // batch_size + 1
+            for i in range(n_iters):
+                idx = i * batch_size
+                mae.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
+        else:
+            mae.update((y_pred, y, batch_size))
 
-    mae.reset()
-    y_pred = torch.Tensor([[3.0], [-3.0]])
-    y = torch.zeros(2)
-    mae.update((y_pred, y))
-    assert isinstance(mae.compute(), float)
-    assert mae.compute() == 3.0
+        np_y = y.numpy()
+        np_y_pred = y_pred.numpy()
+
+        np_res = (np.abs(np_y_pred - np_y)).sum() / np_y.shape[0]
+        assert isinstance(mae.compute(), float)
+        assert mae.compute() == np_res
+
+    def get_test_cases():
+
+        test_cases = [
+            (torch.randint(0, 10, size=(100, 1)), torch.randint(0, 10, size=(100, 1)), 1),
+            (torch.randint(-10, 10, size=(100, 5)), torch.randint(-10, 10, size=(100, 5)), 1),
+            # updated batches
+            (torch.randint(0, 10, size=(100, 1)), torch.randint(0, 10, size=(100, 1)), 16),
+            (torch.randint(-20, 20, size=(100, 5)), torch.randint(-20, 20, size=(100, 5)), 16),
+        ]
+
+        return test_cases
+
+    for _ in range(5):
+        # check multiple random inputs as random exact occurencies are rare
+        test_cases = get_test_cases()
+        for y_pred, y, batch_size in test_cases:
+            _test(y_pred, y, batch_size)
 
 
 def _test_distrib_integration(device):
     import numpy as np
+
     from ignite.engine import Engine
 
     rank = idist.get_rank()
@@ -77,23 +104,16 @@ def _test_distrib_accumulator_device(device):
         metric_devices.append(idist.device())
     for metric_device in metric_devices:
         mae = MeanAbsoluteError(device=metric_device)
-        assert mae._device == metric_device
-        assert mae._sum_of_absolute_errors.device == metric_device, "{}:{} vs {}:{}".format(
-            type(mae._sum_of_absolute_errors.device),
-            mae._sum_of_absolute_errors.device,
-            type(metric_device),
-            metric_device,
-        )
+
+        for dev in [mae._device, mae._sum_of_absolute_errors.device]:
+            assert dev == metric_device, f"{type(dev)}:{dev} vs {type(metric_device)}:{metric_device}"
 
         y_pred = torch.tensor([[2.0], [-2.0]])
         y = torch.zeros(2)
         mae.update((y_pred, y))
-        assert mae._sum_of_absolute_errors.device == metric_device, "{}:{} vs {}:{}".format(
-            type(mae._sum_of_absolute_errors.device),
-            mae._sum_of_absolute_errors.device,
-            type(metric_device),
-            metric_device,
-        )
+
+        for dev in [mae._device, mae._sum_of_absolute_errors.device]:
+            assert dev == metric_device, f"{type(dev)}:{dev} vs {type(metric_device)}:{metric_device}"
 
 
 def test_accumulator_detached():
@@ -109,16 +129,18 @@ def test_accumulator_detached():
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif(torch.cuda.device_count() < 1, reason="Skip if no GPU")
-def test_distrib_gpu(local_rank, distributed_context_single_node_nccl):
-    device = torch.device("cuda:{}".format(local_rank))
+def test_distrib_nccl_gpu(distributed_context_single_node_nccl):
+
+    device = idist.device()
     _test_distrib_integration(device)
     _test_distrib_accumulator_device(device)
 
 
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
-def test_distrib_cpu(distributed_context_single_node_gloo):
-    device = torch.device("cpu")
+def test_distrib_gloo_cpu_or_gpu(distributed_context_single_node_gloo):
+
+    device = idist.device()
     _test_distrib_integration(device)
     _test_distrib_accumulator_device(device)
 
@@ -138,8 +160,9 @@ def test_distrib_hvd(gloo_hvd_executor):
 @pytest.mark.multinode_distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif("MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
-def test_multinode_distrib_cpu(distributed_context_multi_node_gloo):
-    device = torch.device("cpu")
+def test_multinode_distrib_gloo_cpu_or_gpu(distributed_context_multi_node_gloo):
+
+    device = idist.device()
     _test_distrib_integration(device)
     _test_distrib_accumulator_device(device)
 
@@ -147,8 +170,9 @@ def test_multinode_distrib_cpu(distributed_context_multi_node_gloo):
 @pytest.mark.multinode_distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif("GPU_MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
-def test_multinode_distrib_gpu(distributed_context_multi_node_nccl):
-    device = torch.device("cuda:{}".format(distributed_context_multi_node_nccl["local_rank"]))
+def test_multinode_distrib_nccl_gpu(distributed_context_multi_node_nccl):
+
+    device = idist.device()
     _test_distrib_integration(device)
     _test_distrib_accumulator_device(device)
 
@@ -157,6 +181,7 @@ def test_multinode_distrib_gpu(distributed_context_multi_node_nccl):
 @pytest.mark.skipif("NUM_TPU_WORKERS" in os.environ, reason="Skip if NUM_TPU_WORKERS is in env vars")
 @pytest.mark.skipif(not idist.has_xla_support, reason="Skip if no PyTorch XLA package")
 def test_distrib_single_device_xla():
+
     device = idist.device()
     _test_distrib_integration(device)
     _test_distrib_accumulator_device(device)

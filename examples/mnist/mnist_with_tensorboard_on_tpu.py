@@ -17,12 +17,16 @@
 
 from argparse import ArgumentParser
 
-from torch.utils.data import DataLoader
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 from torch.optim import SGD
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from torchvision.datasets import MNIST
-from torchvision.transforms import Compose, ToTensor, Normalize
+from torchvision.transforms import Compose, Normalize, ToTensor
+
+from ignite.engine import Events, create_supervised_evaluator, create_supervised_trainer
+from ignite.metrics import Accuracy, Loss, RunningAverage
 
 try:
     import torch_xla.core.xla_model as xm
@@ -32,11 +36,6 @@ except ImportError:
         "\n\t- curl https://raw.githubusercontent.com/pytorch/xla/master/contrib/scripts/env-setup.py -o xla-setup.py"
         "\n\t- python xla-setup.py --version 1.5"
     )
-
-from torch.utils.tensorboard import SummaryWriter
-
-from ignite.engine import Events, create_supervised_trainer, create_supervised_evaluator
-from ignite.metrics import Accuracy, Loss, RunningAverage
 
 
 class Net(nn.Module):
@@ -116,9 +115,7 @@ def run(train_batch_size, val_batch_size, epochs, lr, momentum, log_interval, lo
         avg_accuracy = metrics["accuracy"]
         avg_nll = metrics["nll"]
         print(
-            "Training Results - Epoch: {}  Avg accuracy: {:.2f} Avg loss: {:.2f}".format(
-                engine.state.epoch, avg_accuracy, avg_nll
-            )
+            f"Training Results - Epoch: {engine.state.epoch} Avg accuracy: {avg_accuracy:.2f} Avg loss: {avg_nll:.2f}"
         )
         writer.add_scalar("training/avg_loss", avg_nll, engine.state.epoch)
         writer.add_scalar("training/avg_accuracy", avg_accuracy, engine.state.epoch)
@@ -130,9 +127,7 @@ def run(train_batch_size, val_batch_size, epochs, lr, momentum, log_interval, lo
         avg_accuracy = metrics["accuracy"]
         avg_nll = metrics["nll"]
         print(
-            "Validation Results - Epoch: {}  Avg accuracy: {:.2f} Avg loss: {:.2f}".format(
-                engine.state.epoch, avg_accuracy, avg_nll
-            )
+            f"Validation Results - Epoch: {engine.state.epoch} Avg accuracy: {avg_accuracy:.2f} Avg loss: {avg_nll:.2f}"
         )
         writer.add_scalar("valdation/avg_loss", avg_nll, engine.state.epoch)
         writer.add_scalar("valdation/avg_accuracy", avg_accuracy, engine.state.epoch)

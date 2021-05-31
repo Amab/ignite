@@ -10,10 +10,22 @@ __all__ = ["MeanPairwiseDistance"]
 
 
 class MeanPairwiseDistance(Metric):
-    """
-    Calculates the mean pairwise distance: average of pairwise distances computed on provided batches.
+    """Calculates the mean :class:`~torch.nn.PairwiseDistance`.
+    Average of pairwise distances computed on provided batches.
 
     - ``update`` must receive output of the form ``(y_pred, y)`` or ``{'y_pred': y_pred, 'y': y}``.
+
+    Args:
+        p: the norm degree. Default: 2
+        eps: Small value to avoid division by zero. Default: 1e-6
+        output_transform: a callable that is used to transform the
+            :class:`~ignite.engine.engine.Engine`'s ``process_function``'s output into the
+            form expected by the metric. This can be useful if, for example, you have a multi-output model and
+            you want to compute the metric with respect to one of the outputs.
+            By default, metrics require the output as ``(y_pred, y)`` or ``{'y_pred': y_pred, 'y': y}``.
+        device: specifies which device updates are accumulated on. Setting the
+            metric's device to be the same as your ``update`` arguments ensures the ``update`` method is
+            non-blocking. By default, CPU.
     """
 
     def __init__(
@@ -22,13 +34,13 @@ class MeanPairwiseDistance(Metric):
         eps: float = 1e-6,
         output_transform: Callable = lambda x: x,
         device: Union[str, torch.device] = torch.device("cpu"),
-    ):
+    ) -> None:
         super(MeanPairwiseDistance, self).__init__(output_transform, device=device)
         self._p = p
         self._eps = eps
 
     @reinit__is_reduced
-    def reset(self):
+    def reset(self) -> None:
         self._sum_of_distances = torch.tensor(0.0, device=self._device)
         self._num_examples = 0
 

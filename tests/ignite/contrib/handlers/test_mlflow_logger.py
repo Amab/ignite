@@ -5,7 +5,12 @@ from unittest.mock import MagicMock, call
 import pytest
 import torch
 
-from ignite.contrib.handlers.mlflow_logger import *
+from ignite.contrib.handlers.mlflow_logger import (
+    MLflowLogger,
+    OptimizerParamsHandler,
+    OutputHandler,
+    global_step_from_engine,
+)
 from ignite.engine import Engine, Events, State
 
 
@@ -240,7 +245,7 @@ def test_integration(dirname):
         global_step = engine.state.get_event_attrib_value(event_name)
         v = global_step * 0.1
         true_values.append(v)
-        logger.log_metrics({"{}".format("test_value"): v}, step=global_step)
+        logger.log_metrics({"test_value": v}, step=global_step)
 
     mlflow_logger.attach(trainer, log_handler=dummy_handler, event_name=Events.EPOCH_COMPLETED)
 
@@ -282,7 +287,7 @@ def test_integration_as_context_manager(dirname):
             global_step = engine.state.get_event_attrib_value(event_name)
             v = global_step * 0.1
             true_values.append(v)
-            logger.log_metrics({"{}".format("test_value"): v}, step=global_step)
+            logger.log_metrics({"test_value": v}, step=global_step)
 
         mlflow_logger.attach(trainer, log_handler=dummy_handler, event_name=Events.EPOCH_COMPLETED)
 
@@ -319,7 +324,7 @@ def test_mlflow_bad_metric_name_handling(dirname):
             engine.state.epoch = 1
             handler(engine, mlflow_logger, event_name=Events.EPOCH_COMPLETED)
 
-            for i, v in enumerate(true_values):
+            for _, v in enumerate(true_values):
                 engine.state.epoch += 1
                 engine.state.metrics["metric 0"] = v
                 handler(engine, mlflow_logger, event_name=Events.EPOCH_COMPLETED)
@@ -335,7 +340,6 @@ def test_mlflow_bad_metric_name_handling(dirname):
 
 @pytest.fixture
 def no_site_packages():
-    import sys
 
     mlflow_client_modules = {}
     for k in sys.modules:

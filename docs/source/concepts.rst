@@ -1,8 +1,8 @@
 Concepts
 ========
 
-Engine
-------
+Engine:
+-------
 
 The **essence** of the framework is the class :class:`~ignite.engine.engine.Engine`, an abstraction that loops a given number of times over
 provided data, executes a processing function and returns a result:
@@ -48,8 +48,8 @@ function can return everything user wants. Output is set to ``trainer.state.outp
 
 .. Note ::
 
-    By default, epoch length is defined by ``len(data)``. However, user can also manually define the epoch length as a
-    number of iterations to loop. In this way the input data can be an iterator.
+    By default, epoch length is defined by ``len(data)``. However, a user can also manually define the epoch length as a
+    number of iterations to loop over. In this way, the input data can be an iterator.
 
     .. code-block:: python
 
@@ -59,7 +59,7 @@ function can return everything user wants. Output is set to ``trainer.state.outp
     will be automatically determined when data iterator is exhausted.
 
 
-**Mostly any complexity training logic** can be coded as ``train_step`` method and a trainer constructed using this method.
+**Training logic of any complexity** can be coded with ``train_step`` method and a trainer can be constructed using this method.
 Argument ``batch`` in ``train_step`` function is user-defined and can contain any data required for a single iteration.
 
 .. code-block:: python
@@ -108,10 +108,10 @@ Argument ``batch`` in ``train_step`` function is user-defined and can contain an
 For multi-models training examples like GAN's, please, see our :doc:`examples`.
 
 
-Events and Handlers
--------------------
+Events and Handlers:
+--------------------
 
-To improve the :class:`~ignite.engine.engine.Engine`'s flexibility, an event system is introduced that facilitates interaction on each step of
+To improve the :class:`~ignite.engine.engine.Engine`'s flexibility, an event system is introduced which facilitates interaction on each step of
 the run:
 
 - *engine is started/completed*
@@ -120,8 +120,8 @@ the run:
 
 Complete list of events can be found at :class:`~ignite.engine.events.Events`.
 
-Thus, user can execute a custom code as an event handler. Handlers can be any function: e.g. lambda, simple function,
-class method etc. The first argument can be optionally `engine`, but not necessary.
+Thus, a user can execute a custom code as an event handler. Handlers can be any function: e.g. lambda, simple function,
+class method etc. The first argument can be optionally `engine`, but not necessarily.
 
 Let us consider in more detail what happens when :meth:`~ignite.engine.engine.Engine.run` is called:
 
@@ -140,9 +140,9 @@ Let us consider in more detail what happens when :meth:`~ignite.engine.engine.En
         fire_event(Events.EPOCH_COMPLETED)
     fire_event(Events.COMPLETED)
 
-At first *"engine is started"* event is fired and all its event handlers are executed (we will see in the next paragraph
+At first, *"engine is started"* event is fired and all its event handlers are executed (we will see in the next paragraph
 how to add event handlers). Next, `while` loop is started and *"epoch is started"* event occurs, etc. Every time
-an event is "fired", attached handlers are executed.
+an event is fired, attached handlers are executed.
 
 Attaching an event handler is simple using method :meth:`~ignite.engine.engine.Engine.add_event_handler` or
 :meth:`~ignite.engine.engine.Engine.on` decorator:
@@ -165,7 +165,7 @@ Attaching an event handler is simple using method :meth:`~ignite.engine.engine.E
     mydata = [1, 2, 3, 4]
 
     def on_training_ended(data):
-        print("Training is ended. mydata={}".format(data))
+        print(f"Training is ended. mydata={data}")
 
     trainer.add_event_handler(Events.COMPLETED, on_training_ended, mydata)
 
@@ -181,8 +181,7 @@ reference returned by :meth:`~ignite.engine.engine.Engine.add_event_handler`. Th
     evaluator = create_supervised_evaluator(model, metrics={"acc": Accuracy()})
 
     def log_metrics(engine, title):
-        print("Epoch: {} - {} accuracy: {:.2f}"
-               .format(trainer.state.epoch, title, engine.state.metrics["acc"]))
+        print(f"Epoch: {trainer.state.epoch} - {title} accuracy: {engine.state.metrics['acc']:.2f}")
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def evaluate(trainer):
@@ -210,8 +209,7 @@ event filtering function:
 
     @trainer.on(Events.ITERATION_COMPLETED(every=50))
     def log_training_loss_every_50_iterations():
-        print("{} / {} : {} - loss: {:.2f}"
-              .format(trainer.state.epoch, trainer.state.max_epochs, trainer.state.iteration, trainer.state.output))
+        print(f"{trainer.state.epoch} / {trainer.state.max_epochs} : {trainer.state.iteration} - loss: {trainer.state.output:.2f}")
 
     @trainer.on(Events.EPOCH_STARTED(once=25))
     def do_something_once_on_25_epoch():
@@ -229,10 +227,15 @@ event filtering function:
     trainer.run(train_loader, max_epochs=100)
 
 
+Custom events
+``````````````
+
 The user can also define custom events. Events defined by user should inherit from :class:`~ignite.engine.events.EventEnum`
 and be registered with :meth:`~ignite.engine.engine.Engine.register_events` in an `engine`.
 
 .. code-block:: python
+
+    from ignite.engine import EventEnum
 
     class CustomEvents(EventEnum):
         """
@@ -257,8 +260,27 @@ These events could be used to attach any handler and are fired using :meth:`~ign
 
 .. Note ::
 
-   See the source code of :class:`~ignite.contrib.engines.create_supervised_tbptt_trainer` for an example of usage of
+   See the source code of :func:`~ignite.contrib.engines.tbptt.create_supervised_tbptt_trainer` for an example of usage of
    custom events.
+
+If you want to use filtering with custom events (e.g. ``CustomEvents.CUSTOM_STARTED(every=5)``), you need to do 3 more things:
+
+- ``engine.state`` should have corresponding attributes for the events, e.g. ``engine.state.custom_started``
+- you need to pass a dict `event_to_attr` to :meth:`~ignite.engine.engine.Engine.register_events`, which maps between events and state attributes, e.g.
+
+.. code-block:: python
+
+    event_to_attr = {
+        CustomEvents.CUSTOM_STARTED: "custom_started",
+        CustomEvents.CUSTOM_COMPLETED: "custom_completed",
+    }
+
+- you should increase the counter for the event whenever you fire the event, e.g. ``engine.state.custom_started += 1``
+
+.. warning::
+
+    This solution for filtering is a temporary workaround and may change in the future.
+
 
 Handlers
 ````````
@@ -304,8 +326,8 @@ epoch:
 .. image:: _static/img/concepts/timeline_and_events.png
    :target: _static/img/concepts/timeline_and_events.png
 
-State
------
+State:
+------
 A state is introduced in :class:`~ignite.engine.engine.Engine` to store the output of the `process_function`, current epoch,
 iteration and other helpful information. Each :class:`~ignite.engine.engine.Engine` contains a :class:`~ignite.engine.events.State`,
 which includes the following:
@@ -319,7 +341,7 @@ which includes the following:
 
 Other attributes can be found in the docs of :class:`~ignite.engine.events.State`.
 
-In the code below, `engine.state.output` will store the batch loss. This output is used to print the loss at 
+In the code below, `engine.state.output` will store the batch loss. This output is used to print the loss at
 every iteration.
 
 .. code-block:: python
@@ -337,12 +359,12 @@ every iteration.
         iteration = engine.state.iteration
         epoch = engine.state.epoch
         loss = engine.state.output
-        print("Epoch: {}, Iteration: {}, Loss: {}".format(epoch, iteration, loss))
+        print(f"Epoch: {epoch}, Iteration: {iteration}, Loss: {loss}")
 
     trainer.add_event_handler(Events.ITERATION_COMPLETED, on_iteration_completed)
 
 Since there is no restrictions on the output of `process_function`, Ignite provides `output_transform` argument for its
-:class:`~ignite.metrics` and :class:`~ignite.handlers`. Argument `output_transform` is a function used to transform `engine.state.output` for intended use. Below we'll see different types of `engine.state.output` and how to transform them.
+:ref:`ignite.metrics` and :ref:`ignite.handlers`. Argument `output_transform` is a function used to transform `engine.state.output` for intended use. Below we'll see different types of `engine.state.output` and how to transform them.
 
 In the code below, `engine.state.output` will be a list of loss, y_pred, y for the processed batch. If we want to attach :class:`~ignite.metrics.Accuracy` to the engine, `output_transform` will be needed to get y_pred and y from
 `engine.state.output`. Let's see how that is done:
@@ -364,7 +386,7 @@ In the code below, `engine.state.output` will be a list of loss, y_pred, y for t
     def print_loss(engine):
         epoch = engine.state.epoch
         loss = engine.state.output[0]
-        print ('Epoch {epoch}: train_loss = {loss}'.format(epoch=epoch, loss=loss))
+        print (f'Epoch {epoch}: train_loss = {loss}')
 
     accuracy = Accuracy(output_transform=lambda x: [x[1], x[2]])
     accuracy.attach(trainer, 'acc')
@@ -392,7 +414,7 @@ batch, this is how the user can use `output_transform` to get y_pred and y from 
     def print_loss(engine):
         epoch = engine.state.epoch
         loss = engine.state.output['loss']
-        print ('Epoch {epoch}: train_loss = {loss}'.format(epoch=epoch, loss=loss))
+        print (f'Epoch {epoch}: train_loss = {loss}')
 
     accuracy = Accuracy(output_transform=lambda x: [x['y_pred'], x['y']])
     accuracy.attach(trainer, 'acc')
@@ -409,8 +431,8 @@ batch, this is how the user can use `output_transform` to get y_pred and y from 
           engine.state.new_attribute = 12345
 
 
-Metrics
--------
+Metrics:
+--------
 
 Library provides a list of out-of-the-box metrics for various Machine Learning tasks. Two way of computing
 metrics are supported : 1) online and 2) storing the entire output history.

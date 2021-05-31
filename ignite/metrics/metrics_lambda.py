@@ -1,9 +1,9 @@
 import itertools
-from typing import Any, Callable, Union
+from typing import Any, Callable, Optional, Union
 
 import torch
 
-from ignite.engine import Engine, Events
+from ignite.engine import Engine
 from ignite.metrics.metric import EpochWise, Metric, MetricUsage, reinit__is_reduced
 
 __all__ = ["MetricsLambda"]
@@ -18,12 +18,14 @@ class MetricsLambda(Metric):
     When update, this metric does not recursively update the metrics
     it depends on. When reset, all its dependency metrics would be
     resetted. When attach, all its dependency metrics would be attached
-    automatically (but partially, e.g :meth:`~ignite.metrics.Metric.is_attached()` will return False).
+    automatically (but partially, e.g :meth:`~ignite.metrics.metric.Metric.is_attached()` will return False).
 
     Args:
-        f (callable): the function that defines the computation
-        args (sequence): Sequence of other metrics or something
+        f: the function that defines the computation
+        args: Sequence of other metrics or something
             else that will be fed to ``f`` as arguments.
+        kwargs: Sequence of other metrics or something
+            else that will be fed to ``f`` as keyword arguments.
 
     Example:
 
@@ -64,11 +66,11 @@ class MetricsLambda(Metric):
 
     """
 
-    def __init__(self, f: Callable, *args, **kwargs):
+    def __init__(self, f: Callable, *args: Any, **kwargs: Any) -> None:
         self.function = f
         self.args = args
         self.kwargs = kwargs
-        self.engine = None
+        self.engine = None  # type: Optional[Engine]
         super(MetricsLambda, self).__init__(device="cpu")
 
     @reinit__is_reduced
@@ -78,7 +80,7 @@ class MetricsLambda(Metric):
                 i.reset()
 
     @reinit__is_reduced
-    def update(self, output) -> None:
+    def update(self, output: Any) -> None:
         # NB: this method does not recursively update dependency metrics,
         # which might cause duplicate update issue. To update this metric,
         # users should manually update its dependencies.
@@ -138,7 +140,7 @@ class MetricsLambda(Metric):
         return not is_detached
 
 
-def _get_value_on_cpu(v: Any):
+def _get_value_on_cpu(v: Any) -> Any:
     if isinstance(v, Metric):
         v = v.compute()
     if isinstance(v, torch.Tensor):

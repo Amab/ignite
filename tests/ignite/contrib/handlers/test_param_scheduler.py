@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -678,9 +678,7 @@ def test_lr_scheduler():
             data = [0] * 10
             max_epochs = 2
             trainer.run(data, max_epochs=max_epochs)
-            assert lrs_true == pytest.approx(lrs), "{}: {} ({}) vs {} ({})".format(
-                _, lrs_true, len(lrs_true), lrs, len(lrs)
-            )
+            assert lrs_true == pytest.approx(lrs), f"{_}: {lrs_true} ({len(lrs_true)}) vs {lrs} ({len(lrs)})"
             optimizer1.load_state_dict(opt_state_dict1)
             scheduler.load_state_dict(state_dict1)
             optimizer2.load_state_dict(opt_state_dict2)
@@ -900,6 +898,15 @@ def test_simulate_and_plot_values():
         milestones_values=[(10, 0.5), (20, 0.45), (21, 0.3), (30, 0.1), (40, 0.1)],
     )
 
+    with pytest.raises(RuntimeError, match=r"This method requires matplotlib to be installed."):
+        with patch.dict("sys.modules", {"matplotlib.pylab": None}):
+            _test(
+                PiecewiseLinear,
+                optimizer=optimizer,
+                param_name="lr",
+                milestones_values=[(10, 0.5), (20, 0.45), (21, 0.3), (30, 0.1), (40, 0.1)],
+            )
+
 
 def test_create_lr_scheduler_with_warmup():
 
@@ -963,13 +970,13 @@ def test_create_lr_scheduler_with_warmup():
 
             assert lrs == pytest.approx([v for i, v in simulated_values])
 
-            assert lrs[0] == pytest.approx(warmup_start_value), "lrs={}".format(lrs[: warmup_duration + num_iterations])
-            assert lrs[warmup_duration - 1] == pytest.approx(warmup_end_value), "lrs={}".format(
-                lrs[: warmup_duration + num_iterations]
-            )
-            assert lrs[warmup_duration] == pytest.approx(warmup_end_next_value), "lrs={}".format(
-                lrs[: warmup_duration + num_iterations]
-            )
+            assert lrs[0] == pytest.approx(warmup_start_value), f"lrs={lrs[: warmup_duration + num_iterations]}"
+            assert lrs[warmup_duration - 1] == pytest.approx(
+                warmup_end_value
+            ), f"lrs={lrs[: warmup_duration + num_iterations]}"
+            assert lrs[warmup_duration] == pytest.approx(
+                warmup_end_next_value
+            ), f"lrs={lrs[: warmup_duration + num_iterations]}"
             scheduler.load_state_dict(state_dict)
 
     t1 = torch.zeros([1], requires_grad=True)
@@ -1149,6 +1156,9 @@ def test_param_group_scheduler_asserts():
         ParamGroupScheduler(schedulers=[lr_scheduler1, lr_scheduler2], names=["a"])
 
     scheduler = ParamGroupScheduler(schedulers=[lr_scheduler1, lr_scheduler2], names=["a", "b"])
+    with pytest.raises(TypeError, match=r"Argument state_dict should be a dictionary"):
+        scheduler.load_state_dict(None)
+
     with pytest.raises(ValueError, match=r"Required state attribute 'schedulers' is absent in provided state_dict"):
         scheduler.load_state_dict({"a": 1})
 
@@ -1169,7 +1179,7 @@ def test_param_group_scheduler():
         num_iterations = 10
         max_epochs = 20
 
-        scheduler = ParamGroupScheduler(lr_schedulers, names=["s_{}".format(i) for i in range(len(lr_schedulers))])
+        scheduler = ParamGroupScheduler(lr_schedulers, names=[f"s_{i}" for i in range(len(lr_schedulers))])
         state_dict = scheduler.state_dict()
 
         trainer = Engine(lambda engine, batch: None)

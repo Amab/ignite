@@ -36,7 +36,7 @@ As a consequence, the following code is correct too:
     evaluator.add_event_handler(Events.COMPLETED, best_model_saver, {'mymodel': model})
 
 
-More details :ref:`Events and Handlers`.
+More details :ref:`Events and Handlers:`.
 
 
 Creating Custom Events based on Forward/Backward Pass
@@ -46,6 +46,8 @@ There are cases where the user might want to add events based on the loss calcul
 flexibility to the user to allow for this:
 
 .. code-block:: python
+
+    from ignite.engine import EventEnum
 
     class BackpropEvents(EventEnum):
         """
@@ -80,7 +82,7 @@ flexibility to the user to allow for this:
 
     Events defined by user should inherit from :class:`~ignite.engine.events.EventEnum`
 
-More detailed implementation can be found in `TBPTT Trainer <_modules/ignite/contrib/engines/tbptt.html#create_supervised_tbptt_trainer>`_.
+More detailed implementation can be found in `TBPTT Trainer <https://pytorch.org/ignite/master/_modules/ignite/contrib/engines/tbptt.html#create_supervised_tbptt_trainer>`_.
 
 
 Gradients accumulation
@@ -141,7 +143,7 @@ Let's use an infinite data iterator as training dataflow
         # ...
         s = trainer.state
         print(
-            "{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch.norm())
+            f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch.norm():.3f}"
         )
 
     trainer = Engine(train_step)
@@ -187,7 +189,7 @@ In this case, there will be only a single epoch defined.
         # ...
         s = trainer.state
         print(
-            "{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch.norm())
+            f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch.norm():.3f}"
         )
 
     trainer = Engine(train_step)
@@ -244,7 +246,7 @@ In the code, we do not specify `epoch_length` which will be automatically determ
         # ...
         s = trainer.state
         print(
-            "{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch)
+            f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch:.3f}"
         )
 
     trainer = Engine(train_step)
@@ -274,7 +276,7 @@ In case of validation, the code is simply
         # ...
         s = evaluator.state
         print(
-            "{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch)
+            f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch:.3f}"
         )
 
     evaluator = Engine(val_step)
@@ -308,7 +310,7 @@ but here we will do this explicitly on iteration:
         # ...
         s = trainer.state
         print(
-            "{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch)
+            f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch:.3f}"
         )
 
     trainer = Engine(train_step)
@@ -340,7 +342,7 @@ In case of validation, the code is simply
         # ...
         s = evaluator.state
         print(
-            "{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch)
+            f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch:.3f}"
         )
 
     evaluator = Engine(val_step)
@@ -373,18 +375,18 @@ Simpliest way to fetch time of single epoch and complete training is to use
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def log_epoch_time():
-        print("{}: {}".format(trainer.state.epoch, trainer.state.times["EPOCH_COMPLETED"]))
+        print(f"{trainer.state.epoch}: {trainer.state.times['EPOCH_COMPLETED']}")
 
     @trainer.on(Events.COMPLETED)
     def log_total_time():
-        print("Total: {}".format(trainer.state.times["COMPLETED"]))
+        print(f"Total: {trainer.state.times['COMPLETED']}")
 
 
 For details, see :class:`~ignite.engine.events.State`.
 
 
-Detailed profiling
-``````````````````
+Basic time profiling
+````````````````````
 
 User can setup :class:`~ignite.contrib.handlers.time_profilers.BasicTimeProfiler` to fetch times spent in data
 processing, training step, event handlers:
@@ -444,10 +446,56 @@ Typical output:
 For details, see :class:`~ignite.contrib.handlers.time_profilers.BasicTimeProfiler`.
 
 
+Event handlers time profiling
+`````````````````````````````
+
+If you want to get time breakdown per handler basis then you can setup
+:class:`~ignite.contrib.handlers.time_profilers.HandlersTimeProfiler`:
+
+.. code-block:: python
+
+    from ignite.contrib.handlers import HandlersTimeProfiler
+
+    trainer = ...
+
+    # Create an object of the profiler and attach an engine to it
+    profiler = HandlersTimeProfiler()
+    profiler.attach(trainer)
+
+    @trainer.on(Events.EPOCH_COMPLETED(every=10))
+    def log_intermediate_results():
+        profiler.print_results(profiler.get_results())
+
+    trainer.run(dataloader, max_epochs=3)
+
+Typical output:
+
+.. code-block:: text
+
+    -----------------------------------------  -----------------------  -------------- ...
+    Handler                                    Event Name                     Total(s)
+    -----------------------------------------  -----------------------  --------------
+    run.<locals>.log_training_results          EPOCH_COMPLETED                19.43245
+    run.<locals>.log_validation_results        EPOCH_COMPLETED                 2.55271
+    run.<locals>.log_time                      EPOCH_COMPLETED                 0.00049
+    run.<locals>.log_intermediate_results      EPOCH_COMPLETED                 0.00106
+    run.<locals>.log_training_loss             ITERATION_COMPLETED               0.059
+    run.<locals>.log_time                      COMPLETED                 not triggered
+    -----------------------------------------  -----------------------  --------------
+    Total                                                                     22.04571
+    -----------------------------------------  -----------------------  --------------
+    Processing took total 11.29543s [min/index: 0.00393s/1875, max/index: 0.00784s/0,
+     mean: 0.00602s, std: 0.00034s]
+    Dataflow took total 16.24365s [min/index: 0.00533s/1874, max/index: 0.01129s/937,
+     mean: 0.00866s, std: 0.00113s]
+
+For details, see :class:`~ignite.contrib.handlers.time_profilers.HandlersTimeProfiler`.
+
+
 Custom time measures
 ````````````````````
 
-Custom time measures can be performed using :class:`~ignite.handlers.Timer`. See its docstring for details.
+Custom time measures can be performed using :class:`~ignite.handlers.timing.Timer`. See its docstring for details.
 
 
 Other questions
@@ -455,4 +503,4 @@ Other questions
 
 Other questions and answers can be also found on the github among the issues labeled by
 `question <https://github.com/pytorch/ignite/issues?utf8=%E2%9C%93&q=is%3Aissue+label%3Aquestion+>`_ and on the forum
-`Discuss.PyTorch <https://discuss.pytorch.org/c/ignite>`_, category "Ignite".
+`Discuss.PyTorch <https://discuss.pytorch.org/c/ignite/15>`_, category "Ignite".

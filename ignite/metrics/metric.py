@@ -2,12 +2,15 @@ import warnings
 from abc import ABCMeta, abstractmethod
 from collections.abc import Mapping
 from functools import wraps
-from typing import Any, Callable, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple, Union
 
 import torch
 
 import ignite.distributed as idist
-from ignite.engine import Engine, Events
+from ignite.engine import CallableEventWithFilter, Engine, Events
+
+if TYPE_CHECKING:
+    from ignite.metrics.metrics_lambda import MetricsLambda
 
 __all__ = ["Metric", "MetricUsage", "EpochWise", "BatchWise", "BatchFiltered"]
 
@@ -21,28 +24,28 @@ class MetricUsage:
 
     Args:
         started: event when the metric starts to compute. This event will be associated to
-            :meth:`~ignite.metrics.Metric.started`.
+            :meth:`~ignite.metrics.metric.Metric.started`.
         completed: event when the metric completes. This event will be associated to
-            :meth:`~ignite.metrics.Metric.completed`.
+            :meth:`~ignite.metrics.metric.Metric.completed`.
         iteration_completed: event when the metric updates. This event will be associated to
-            :meth:`~ignite.metrics.Metric.iteration_completed`.
+            :meth:`~ignite.metrics.metric.Metric.iteration_completed`.
     """
 
-    def __init__(self, started, completed, iteration_completed):
+    def __init__(self, started: Events, completed: Events, iteration_completed: CallableEventWithFilter) -> None:
         self.__started = started
         self.__completed = completed
         self.__iteration_completed = iteration_completed
 
     @property
-    def STARTED(self):
+    def STARTED(self) -> Events:
         return self.__started
 
     @property
-    def COMPLETED(self):
+    def COMPLETED(self) -> Events:
         return self.__completed
 
     @property
-    def ITERATION_COMPLETED(self):
+    def ITERATION_COMPLETED(self) -> CallableEventWithFilter:
         return self.__iteration_completed
 
 
@@ -52,17 +55,18 @@ class EpochWise(MetricUsage):
 
     Metric's methods are triggered on the following engine events:
 
-    - :meth:`~ignite.metrics.Metric.started` on every ``EPOCH_STARTED`` (See :class:`~ignite.engine.events.Events`).
-    - :meth:`~ignite.metrics.Metric.iteration_completed` on every ``ITERATION_COMPLETED``.
-    - :meth:`~ignite.metrics.Metric.completed` on every ``EPOCH_COMPLETED``.
+    - :meth:`~ignite.metrics.metric.Metric.started` on every ``EPOCH_STARTED``
+      (See :class:`~ignite.engine.events.Events`).
+    - :meth:`~ignite.metrics.metric.Metric.iteration_completed` on every ``ITERATION_COMPLETED``.
+    - :meth:`~ignite.metrics.metric.Metric.completed` on every ``EPOCH_COMPLETED``.
 
     Attributes:
-        usage_name (str): usage name string
+        usage_name: usage name string
     """
 
-    usage_name = "epoch_wise"
+    usage_name: str = "epoch_wise"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super(EpochWise, self).__init__(
             started=Events.EPOCH_STARTED,
             completed=Events.EPOCH_COMPLETED,
@@ -76,17 +80,18 @@ class BatchWise(MetricUsage):
 
     Metric's methods are triggered on the following engine events:
 
-    - :meth:`~ignite.metrics.Metric.started` on every ``ITERATION_STARTED`` (See :class:`~ignite.engine.events.Events`).
-    - :meth:`~ignite.metrics.Metric.iteration_completed` on every ``ITERATION_COMPLETED``.
-    - :meth:`~ignite.metrics.Metric.completed` on every ``ITERATION_COMPLETED``.
+    - :meth:`~ignite.metrics.metric.Metric.started` on every ``ITERATION_STARTED``
+      (See :class:`~ignite.engine.events.Events`).
+    - :meth:`~ignite.metrics.metric.Metric.iteration_completed` on every ``ITERATION_COMPLETED``.
+    - :meth:`~ignite.metrics.metric.Metric.completed` on every ``ITERATION_COMPLETED``.
 
     Attributes:
-        usage_name (str): usage name string
+        usage_name: usage name string
     """
 
-    usage_name = "batch_wise"
+    usage_name: str = "batch_wise"
 
-    def __init__(self):
+    def __init__(self) -> None:
         super(BatchWise, self).__init__(
             started=Events.ITERATION_STARTED,
             completed=Events.ITERATION_COMPLETED,
@@ -100,18 +105,19 @@ class BatchFiltered(MetricUsage):
 
     Metric's methods are triggered on the following engine events:
 
-    - :meth:`~ignite.metrics.Metric.started` on every ``EPOCH_STARTED`` (See :class:`~ignite.engine.events.Events`).
-    - :meth:`~ignite.metrics.Metric.iteration_completed` on filtered ``ITERATION_COMPLETED``.
-    - :meth:`~ignite.metrics.Metric.completed` on every ``EPOCH_COMPLETED``.
+    - :meth:`~ignite.metrics.metric.Metric.started` on every ``EPOCH_STARTED``
+      (See :class:`~ignite.engine.events.Events`).
+    - :meth:`~ignite.metrics.metric.Metric.iteration_completed` on filtered ``ITERATION_COMPLETED``.
+    - :meth:`~ignite.metrics.metric.Metric.completed` on every ``EPOCH_COMPLETED``.
 
     Args:
-        *args: Positional arguments to setup :attr:`~ignite.engine.events.Events.ITERATION_COMPLETED(*args, **kwargs)`
-        **kwargs: Keyword arguments to setup :attr:`~ignite.engine.events.Events.ITERATION_COMPLETED(*args, **kwargs)`
-            handled by :meth:`~ignite.metrics.Metric.iteration_completed`.
+        args: Positional arguments to setup :attr:`~ignite.engine.events.Events.ITERATION_COMPLETED`
+        kwargs: Keyword arguments to setup :attr:`~ignite.engine.events.Events.ITERATION_COMPLETED`
+            handled by :meth:`~ignite.metrics.metric.Metric.iteration_completed`.
 
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super(BatchFiltered, self).__init__(
             started=Events.EPOCH_STARTED,
             completed=Events.EPOCH_COMPLETED,
@@ -124,17 +130,17 @@ class Metric(metaclass=ABCMeta):
     Base class for all Metrics.
 
     Args:
-        output_transform (callable, optional): a callable that is used to transform the
+        output_transform: a callable that is used to transform the
             :class:`~ignite.engine.engine.Engine`'s ``process_function``'s output into the
             form expected by the metric. This can be useful if, for example, you have a multi-output model and
             you want to compute the metric with respect to one of the outputs.
             By default, metrics require the output as ``(y_pred, y)`` or ``{'y_pred': y_pred, 'y': y}``.
-        device (str or torch.device): specifies which device updates are accumulated on. Setting the
+        device: specifies which device updates are accumulated on. Setting the
             metric's device to be the same as your ``update`` arguments ensures the ``update`` method is
             non-blocking. By default, CPU.
 
     Attributes:
-        required_output_keys (tuple): dictionary defines required keys to be found in ``engine.state.output`` if the
+        required_output_keys: dictionary defines required keys to be found in ``engine.state.output`` if the
             latter is a dictionary. Default, ``("y_pred", "y")``. This is useful with custom metrics that can require
             other arguments than predictions ``y_pred`` and targets ``y``. See notes below for an example.
 
@@ -188,10 +194,12 @@ class Metric(metaclass=ABCMeta):
 
             res = evaluator.run(data)
 
+    .. versionchanged:: 0.4.2
+        ``required_output_keys`` became public attribute.
     """
 
     # public class attribute
-    required_output_keys = ("y_pred", "y")
+    required_output_keys: Optional[Tuple] = ("y_pred", "y")
     # for backward compatibility
     _required_output_keys = required_output_keys
 
@@ -206,8 +214,8 @@ class Metric(metaclass=ABCMeta):
             # check if reset and update methods are decorated. Compute may not be decorated
             if not (hasattr(self.reset, "_decorated") and hasattr(self.update, "_decorated")):
                 warnings.warn(
-                    "{} class does not support distributed setting. Computed result is not collected "
-                    "across all computing devices".format(self.__class__.__name__),
+                    f"{self.__class__.__name__} class does not support distributed setting. "
+                    "Computed result is not collected across all computing devices",
                     RuntimeWarning,
                 )
 
@@ -229,7 +237,7 @@ class Metric(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def update(self, output) -> None:
+    def update(self, output: Any) -> None:
         """
         Updates the metric's state using the passed batch output.
 
@@ -250,7 +258,7 @@ class Metric(metaclass=ABCMeta):
         Returns:
             Any: | the actual quantity of interest. However, if a :class:`~collections.abc.Mapping` is returned,
                  it will be (shallow) flattened into `engine.state.metrics` when
-                 :func:`~ignite.metrics.Metric.completed` is called.
+                 :func:`~ignite.metrics.metric.Metric.completed` is called.
 
         Raises:
             NotComputableError: raised when the metric cannot be computed.
@@ -259,49 +267,56 @@ class Metric(metaclass=ABCMeta):
 
     def started(self, engine: Engine) -> None:
         """Helper method to start data gathering for metric's computation. It is automatically attached to the
-        `engine` with :meth:`~ignite.metrics.Metric.attach`.
+        `engine` with :meth:`~ignite.metrics.metric.Metric.attach`.
 
         Args:
-            engine (Engine): the engine to which the metric must be attached
+            engine: the engine to which the metric must be attached
         """
         self.reset()
 
     @torch.no_grad()
     def iteration_completed(self, engine: Engine) -> None:
         """Helper method to update metric's computation. It is automatically attached to the
-        `engine` with :meth:`~ignite.metrics.Metric.attach`.
+        `engine` with :meth:`~ignite.metrics.metric.Metric.attach`.
 
         Args:
-            engine (Engine): the engine to which the metric must be attached
+            engine: the engine to which the metric must be attached
         """
 
         output = self._output_transform(engine.state.output)
         if isinstance(output, Mapping):
             if self.required_output_keys is None:
                 raise TypeError(
-                    "Transformed engine output for {} metric should be a tuple/list, but given {}".format(
-                        self.__class__.__name__, type(output)
-                    )
+                    f"Transformed engine output for {self.__class__.__name__} metric should be a tuple/list, "
+                    f"but given {type(output)}"
                 )
             if not all([k in output for k in self.required_output_keys]):
                 raise ValueError(
                     "When transformed engine's output is a mapping, "
-                    "it should contain {} keys, but given {}".format(self.required_output_keys, list(output.keys()))
+                    f"it should contain {self.required_output_keys} keys, but given {list(output.keys())}"
                 )
             output = tuple(output[k] for k in self.required_output_keys)
         self.update(output)
 
     def completed(self, engine: Engine, name: str) -> None:
         """Helper method to compute metric's value and put into the engine. It is automatically attached to the
-        `engine` with :meth:`~ignite.metrics.Metric.attach`.
+        `engine` with :meth:`~ignite.metrics.metric.Metric.attach`.
 
         Args:
-            engine (Engine): the engine to which the metric must be attached
+            engine: the engine to which the metric must be attached
+            name: the name of the metric used as key in dict `engine.state.metrics`
+
+        .. versionchanged:: 0.4.3
+            Added dict in metrics results.
         """
         result = self.compute()
         if isinstance(result, Mapping):
+            if name in result.keys():
+                raise ValueError(f"Argument name '{name}' is conflicting with mapping keys: {list(result.keys())}")
+
             for key, value in result.items():
                 engine.state.metrics[key] = value
+            engine.state.metrics[name] = result
         else:
             if isinstance(result, torch.Tensor) and len(result.size()) == 0:
                 result = result.item()
@@ -315,11 +330,9 @@ class Metric(metaclass=ABCMeta):
             elif usage == BatchWise.usage_name:
                 usage = BatchWise()
             else:
-                raise ValueError(
-                    "usage should be 'EpochWise.usage_name' or 'BatchWise.usage_name', get {}".format(usage)
-                )
+                raise ValueError(f"usage should be 'EpochWise.usage_name' or 'BatchWise.usage_name', get {usage}")
         if not isinstance(usage, MetricUsage):
-            raise TypeError("Unhandled usage type {}".format(type(usage)))
+            raise TypeError(f"Unhandled usage type {type(usage)}")
         return usage
 
     def attach(self, engine: Engine, name: str, usage: Union[str, MetricUsage] = EpochWise()) -> None:
@@ -328,11 +341,11 @@ class Metric(metaclass=ABCMeta):
         contain computed metric's value under provided name.
 
         Args:
-            engine (Engine): the engine to which the metric must be attached
-            name (str): the name of the metric to attach
-            usage (str or MetricUsage, optional): the usage of the metric. Valid string values should be
-                :attr:`ignite.metrics.EpochWise.usage_name` (default) or
-                :attr:`ignite.metrics.BatchWise.usage_name`.
+            engine: the engine to which the metric must be attached
+            name: the name of the metric to attach
+            usage: the usage of the metric. Valid string values should be
+                :attr:`ignite.metrics.metric.EpochWise.usage_name` (default) or
+                :attr:`ignite.metrics.metric.BatchWise.usage_name`.
 
         Example:
 
@@ -366,13 +379,13 @@ class Metric(metaclass=ABCMeta):
     def detach(self, engine: Engine, usage: Union[str, MetricUsage] = EpochWise()) -> None:
         """
         Detaches current metric from the engine and no metric's computation is done during the run.
-        This method in conjunction with :meth:`~ignite.metrics.Metric.attach` can be useful if several
+        This method in conjunction with :meth:`~ignite.metrics.metric.Metric.attach` can be useful if several
         metrics need to be computed with different periods. For example, one metric is computed every training epoch
         and another metric (e.g. more expensive one) is done every n-th training epoch.
 
         Args:
-            engine (Engine): the engine from which the metric must be detached
-            usage (str or MetricUsage, optional): the usage of the metric. Valid string values should be
+            engine: the engine from which the metric must be detached
+            usage: the usage of the metric. Valid string values should be
                 'epoch_wise' (default) or 'batch_wise'.
 
         Example:
@@ -413,79 +426,69 @@ class Metric(metaclass=ABCMeta):
         value is written to `engine.state.metrics` dictionary.
 
         Args:
-            engine (Engine): the engine checked from which the metric should be attached
-            usage (str or MetricUsage, optional): the usage of the metric. Valid string values should be
+            engine: the engine checked from which the metric should be attached
+            usage: the usage of the metric. Valid string values should be
                 'epoch_wise' (default) or 'batch_wise'.
         """
         usage = self._check_usage(usage)
         return engine.has_event_handler(self.completed, usage.COMPLETED)
 
-    def __add__(self, other):
+    def __add__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x + y, self, other)
 
-    def __radd__(self, other):
+    def __radd__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x + y, other, self)
 
-    def __sub__(self, other):
+    def __sub__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x - y, self, other)
 
-    def __rsub__(self, other):
+    def __rsub__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x - y, other, self)
 
-    def __mul__(self, other):
+    def __mul__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x * y, self, other)
 
-    def __rmul__(self, other):
+    def __rmul__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x * y, other, self)
 
-    def __pow__(self, other):
+    def __pow__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x ** y, self, other)
 
-    def __rpow__(self, other):
+    def __rpow__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x ** y, other, self)
 
-    def __mod__(self, other):
+    def __mod__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x % y, self, other)
 
-    def __div__(self, other):
-        from ignite.metrics.metrics_lambda import MetricsLambda
-
-        return MetricsLambda(lambda x, y: x.__div__(y), self, other)
-
-    def __rdiv__(self, other):
-        from ignite.metrics.metrics_lambda import MetricsLambda
-
-        return MetricsLambda(lambda x, y: x.__div__(y), other, self)
-
-    def __truediv__(self, other):
+    def __truediv__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x.__truediv__(y), self, other)
 
-    def __rtruediv__(self, other):
+    def __rtruediv__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x.__truediv__(y), other, self)
 
-    def __floordiv__(self, other):
+    def __floordiv__(self, other: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x, y: x // y, self, other)
@@ -493,40 +496,42 @@ class Metric(metaclass=ABCMeta):
     def __getattr__(self, attr: str) -> Callable:
         from ignite.metrics.metrics_lambda import MetricsLambda
 
-        def fn(x, *args, **kwargs):
+        def fn(x: Metric, *args: Any, **kwargs: Any) -> Any:
             return getattr(x, attr)(*args, **kwargs)
 
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> "MetricsLambda":
             return MetricsLambda(fn, self, *args, **kwargs)
 
         return wrapper
 
-    def __getitem__(self, index: Any):
+    def __getitem__(self, index: Any) -> "MetricsLambda":
         from ignite.metrics.metrics_lambda import MetricsLambda
 
         return MetricsLambda(lambda x: x[index], self)
 
-    def __getstate__(self):
+    def __getstate__(self) -> Dict:
         return self.__dict__
 
-    def __setstate__(self, d):
+    def __setstate__(self, d: Dict) -> None:
         self.__dict__.update(d)
 
 
-def sync_all_reduce(*attrs) -> Callable:
+def sync_all_reduce(*attrs: Any) -> Callable:
     """Helper decorator for distributed configuration to collect instance attribute value
-    across all participating processes.
+    across all participating processes and apply the specified reduction operation.
 
     See :doc:`metrics` on how to use it.
 
     Args:
-        *attrs: attribute names of decorated class
+        attrs: attribute names of decorated class
 
+    .. versionchanged:: 0.5.0
+        - Ability to handle different reduction operations (SUM, MAX, MIN, PRODUCT).
     """
 
     def wrapper(func: Callable) -> Callable:
         @wraps(func)
-        def another_wrapper(self: Metric, *args, **kwargs) -> Callable:
+        def another_wrapper(self: Metric, *args: Any, **kwargs: Any) -> Callable:
             if not isinstance(self, Metric):
                 raise RuntimeError(
                     "Decorator sync_all_reduce should be used on ignite.metric.Metric class methods only"
@@ -535,9 +540,16 @@ def sync_all_reduce(*attrs) -> Callable:
             if len(attrs) > 0 and not self._is_reduced:
                 if ws > 1:
                     for attr in attrs:
+                        op_kwargs = {}
+                        if ":" in attr:
+                            attr, op = attr.split(":")
+                            valid_ops = ["MIN", "MAX", "SUM", "PRODUCT"]
+                            if op not in valid_ops:
+                                raise ValueError(f"Reduction operation is not valid (expected : {valid_ops}, got: {op}")
+                            op_kwargs["op"] = op
                         t = getattr(self, attr, None)
                         if t is not None:
-                            t = idist.all_reduce(t)
+                            t = idist.all_reduce(t, **op_kwargs)
                             self._is_reduced = True
                             setattr(self, attr, t)
                 else:
@@ -547,7 +559,7 @@ def sync_all_reduce(*attrs) -> Callable:
 
         return another_wrapper
 
-    wrapper._decorated = True
+    setattr(wrapper, "_decorated", True)
     return wrapper
 
 
@@ -556,12 +568,14 @@ def reinit__is_reduced(func: Callable) -> Callable:
 
     See :doc:`metrics` on how to use it.
 
+    Args:
+        func: A callable to reinit.
     """
 
     @wraps(func)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(self: Metric, *args: Any, **kwargs: Any) -> None:
         func(self, *args, **kwargs)
         self._is_reduced = False
 
-    wrapper._decorated = True
+    setattr(wrapper, "_decorated", True)
     return wrapper

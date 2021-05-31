@@ -1,87 +1,14 @@
 # -*- coding: utf-8 -*-
+"""TQDM logger."""
 import warnings
-from typing import Any, Mapping
+from collections import OrderedDict
+from typing import Any, Callable, List, Optional, Union
 
 import torch
 
 from ignite.contrib.handlers.base_logger import BaseLogger, BaseOutputHandler
 from ignite.engine import Engine, Events
-from ignite.engine.events import CallableEventWithFilter
-
-
-class _OutputHandler(BaseOutputHandler):
-    """Helper handler to log engine's output and/or metrics
-
-    Args:
-        description (str): progress bar description.
-        metric_names (list of str, optional): list of metric names to plot or a string "all" to plot all available
-            metrics.
-        output_transform (callable, optional): output transform function to prepare `engine.state.output` as a number.
-            For example, `output_transform = lambda output: output`
-            This function can also return a dictionary, e.g `{'loss': loss1, 'another_loss': loss2}` to label the plot
-            with corresponding keys.
-        closing_event_name: event's name on which the progress bar is closed. Valid events are from
-            :class:`~ignite.engine.events.Events` or any `event_name` added by
-            :meth:`~ignite.engine.engine.Engine.register_events`.
-
-    """
-
-    def __init__(
-        self, description, metric_names=None, output_transform=None, closing_event_name=Events.EPOCH_COMPLETED
-    ):
-        if metric_names is None and output_transform is None:
-            # This helps to avoid 'Either metric_names or output_transform should be defined' of BaseOutputHandler
-            metric_names = []
-        super(_OutputHandler, self).__init__(description, metric_names, output_transform, global_step_transform=None)
-        self.closing_event_name = closing_event_name
-
-    @staticmethod
-    def get_max_number_events(event_name, engine):
-        if event_name in (Events.ITERATION_STARTED, Events.ITERATION_COMPLETED):
-            return engine.state.epoch_length
-        if event_name in (Events.EPOCH_STARTED, Events.EPOCH_COMPLETED):
-            return engine.state.max_epochs
-        return 1
-
-    def __call__(self, engine, logger, event_name):
-
-        pbar_total = self.get_max_number_events(event_name, engine)
-        if logger.pbar is None:
-            logger._reset(pbar_total=pbar_total)
-
-        max_epochs = engine.state.max_epochs
-        default_desc = "Iteration" if max_epochs == 1 else "Epoch"
-
-        desc = self.tag or default_desc
-        max_num_of_closing_events = self.get_max_number_events(self.closing_event_name, engine)
-        if max_num_of_closing_events > 1:
-            global_step = engine.state.get_event_attrib_value(self.closing_event_name)
-            desc += " [{}/{}]".format(global_step, max_num_of_closing_events)
-        logger.pbar.set_description(desc)
-
-        metrics = self._setup_output_metrics(engine)
-
-        rendered_metrics = {}
-        for key, value in metrics.items():
-            if isinstance(value, torch.Tensor):
-                if value.ndimension() == 0:
-                    rendered_metrics[key] = value.item()
-                elif value.ndimension() == 1:
-                    for i, v in enumerate(value):
-                        k = "{}_{}".format(key, i)
-                        rendered_metrics[k] = v.item()
-                else:
-                    warnings.warn("ProgressBar can not log " "tensor with {} dimensions".format(value.ndimension()))
-            else:
-                rendered_metrics[key] = value
-
-        if rendered_metrics:
-            logger.pbar.set_postfix(**rendered_metrics)
-
-        global_step = engine.state.get_event_attrib_value(event_name)
-        if pbar_total is not None:
-            global_step = (global_step - 1) % pbar_total + 1
-        logger.pbar.update(global_step - logger.pbar.n)
+from ignite.engine.events import CallableEventWithFilter, RemovableEventHandle
 
 
 class ProgressBar(BaseLogger):
@@ -89,14 +16,14 @@ class ProgressBar(BaseLogger):
     TQDM progress bar handler to log training progress and computed metrics.
 
     Args:
-        persist (bool, optional): set to ``True`` to persist the progress bar after completion (default = ``False``)
-        bar_format  (str, optional): Specify a custom bar string formatting. May impact performance.
+        persist: set to ``True`` to persist the progress bar after completion (default = ``False``)
+        bar_format : Specify a custom bar string formatting. May impact performance.
             [default: '{desc}[{n_fmt}/{total_fmt}] {percentage:3.0f}%|{bar}{postfix} [{elapsed}<{remaining}]'].
             Set to ``None`` to use ``tqdm`` default bar formatting: '{l_bar}{bar}{r_bar}', where
             l_bar='{desc}: {percentage:3.0f}%|' and
             r_bar='| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'. For more details on the
             formatting, see `tqdm docs <https://tqdm.github.io/docs/tqdm/>`_.
-        **tqdm_kwargs: kwargs passed to tqdm progress bar.
+        tqdm_kwargs: kwargs passed to tqdm progress bar.
             By default, progress bar description displays "Epoch [5/10]" where 5 is the current epoch and 10 is the
             number of epochs; however, if ``max_epochs`` are set to 1, the progress bar instead displays
             "Iteration: [5/10]". If tqdm_kwargs defines `desc`, e.g. "Predictions", than the description is
@@ -173,13 +100,13 @@ class ProgressBar(BaseLogger):
         Events.ITERATION_COMPLETED,
         Events.EPOCH_COMPLETED,
         Events.COMPLETED,
-    ]
+    ]  # type: List[Union[Events, CallableEventWithFilter]]
 
     def __init__(
         self,
-        persist=False,
-        bar_format="{desc}[{n_fmt}/{total_fmt}] {percentage:3.0f}%|{bar}{postfix} [{elapsed}<{remaining}]",
-        **tqdm_kwargs
+        persist: bool = False,
+        bar_format: str = "{desc}[{n_fmt}/{total_fmt}] {percentage:3.0f}%|{bar}{postfix} [{elapsed}<{remaining}]",
+        **tqdm_kwargs: Any,
     ):
 
         try:
@@ -196,12 +123,12 @@ class ProgressBar(BaseLogger):
         self.bar_format = bar_format
         self.tqdm_kwargs = tqdm_kwargs
 
-    def _reset(self, pbar_total):
+    def _reset(self, pbar_total: Optional[int]) -> None:
         self.pbar = self.pbar_cls(
             total=pbar_total, leave=self.persist, bar_format=self.bar_format, initial=1, **self.tqdm_kwargs
         )
 
-    def _close(self, engine):
+    def _close(self, engine: Engine) -> None:
         if self.pbar is not None:
             # https://github.com/tqdm/notebook.py#L240-L250
             # issue #1115 : notebook backend of tqdm checks if n < total (error or KeyboardInterrupt)
@@ -212,38 +139,40 @@ class ProgressBar(BaseLogger):
         self.pbar = None
 
     @staticmethod
-    def _compare_lt(event1, event2):
+    def _compare_lt(
+        event1: Union[Events, CallableEventWithFilter], event2: Union[Events, CallableEventWithFilter]
+    ) -> bool:
         i1 = ProgressBar._events_order.index(event1)
         i2 = ProgressBar._events_order.index(event2)
         return i1 < i2
 
-    def log_message(self, message):
+    def log_message(self, message: str) -> None:
         """
         Logs a message, preserving the progress bar correct output format.
 
         Args:
-            message (str): string you wish to log.
+            message: string you wish to log.
         """
         from tqdm import tqdm
 
         tqdm.write(message, file=self.tqdm_kwargs.get("file", None))
 
-    def attach(
+    def attach(  # type: ignore[override]
         self,
-        engine,
-        metric_names=None,
-        output_transform=None,
-        event_name=Events.ITERATION_COMPLETED,
-        closing_event_name=Events.EPOCH_COMPLETED,
-    ):
+        engine: Engine,
+        metric_names: Optional[str] = None,
+        output_transform: Optional[Callable] = None,
+        event_name: Union[Events, CallableEventWithFilter] = Events.ITERATION_COMPLETED,
+        closing_event_name: Union[Events, CallableEventWithFilter] = Events.EPOCH_COMPLETED,
+    ) -> None:
         """
         Attaches the progress bar to an engine object.
 
         Args:
-            engine (Engine): engine object.
-            metric_names (list of str, optional): list of metric names to plot or a string "all" to plot all available
+            engine: engine object.
+            metric_names: list of metric names to plot or a string "all" to plot all available
                 metrics.
-            output_transform (callable, optional): a function to select what you want to print from the engine's
+            output_transform: a function to select what you want to print from the engine's
                 output. This function may return either a dictionary with entries in the format of ``{name: value}``,
                 or a single scalar, which will be displayed with the default name `output`.
             event_name: event's name on which the progress bar advances. Valid events are from
@@ -251,35 +180,115 @@ class ProgressBar(BaseLogger):
             closing_event_name: event's name on which the progress bar is closed. Valid events are from
                 :class:`~ignite.engine.events.Events`.
 
-        Note: accepted output value types are numbers, 0d and 1d torch tensors and strings
+        Note:
+            Accepted output value types are numbers, 0d and 1d torch tensors and strings.
 
         """
         desc = self.tqdm_kwargs.get("desc", None)
 
         if event_name not in engine._allowed_events:
-            raise ValueError("Logging event {} is not in allowed events for this engine".format(event_name.name))
+            raise ValueError(f"Logging event {event_name.name} is not in allowed events for this engine")
 
         if isinstance(closing_event_name, CallableEventWithFilter):
             if closing_event_name.filter != CallableEventWithFilter.default_event_filter:
                 raise ValueError("Closing Event should not be a filtered event")
 
         if not self._compare_lt(event_name, closing_event_name):
-            raise ValueError(
-                "Logging event {} should be called before closing event {}".format(event_name, closing_event_name)
-            )
+            raise ValueError(f"Logging event {event_name} should be called before closing event {closing_event_name}")
 
         log_handler = _OutputHandler(desc, metric_names, output_transform, closing_event_name=closing_event_name)
 
         super(ProgressBar, self).attach(engine, log_handler, event_name)
         engine.add_event_handler(closing_event_name, self._close)
 
-    def attach_opt_params_handler(self, engine: Engine, event_name: str, *args: Any, **kwargs: Mapping):
+    def attach_opt_params_handler(
+        self, engine: Engine, event_name: Union[str, Events], *args: Any, **kwargs: Any
+    ) -> RemovableEventHandle:
         """Intentionally empty"""
         pass
 
-    def _create_output_handler(self, *args, **kwargs):
+    def _create_output_handler(self, *args: Any, **kwargs: Any) -> "_OutputHandler":
         return _OutputHandler(*args, **kwargs)
 
-    def _create_opt_params_handler(self, *args, **kwargs):
+    def _create_opt_params_handler(self, *args: Any, **kwargs: Any) -> Callable:
         """Intentionally empty"""
         pass
+
+
+class _OutputHandler(BaseOutputHandler):
+    """Helper handler to log engine's output and/or metrics
+
+    Args:
+        description: progress bar description.
+        metric_names: list of metric names to plot or a string "all" to plot all available
+            metrics.
+        output_transform: output transform function to prepare `engine.state.output` as a number.
+            For example, `output_transform = lambda output: output`
+            This function can also return a dictionary, e.g `{'loss': loss1, 'another_loss': loss2}` to label the plot
+            with corresponding keys.
+        closing_event_name: event's name on which the progress bar is closed. Valid events are from
+            :class:`~ignite.engine.events.Events` or any `event_name` added by
+            :meth:`~ignite.engine.engine.Engine.register_events`.
+
+    """
+
+    def __init__(
+        self,
+        description: str,
+        metric_names: Optional[Union[str, List[str]]] = None,
+        output_transform: Optional[Callable] = None,
+        closing_event_name: Union[Events, CallableEventWithFilter] = Events.EPOCH_COMPLETED,
+    ):
+        if metric_names is None and output_transform is None:
+            # This helps to avoid 'Either metric_names or output_transform should be defined' of BaseOutputHandler
+            metric_names = []
+        super(_OutputHandler, self).__init__(description, metric_names, output_transform, global_step_transform=None)
+        self.closing_event_name = closing_event_name
+
+    @staticmethod
+    def get_max_number_events(event_name: Union[str, Events, CallableEventWithFilter], engine: Engine) -> Optional[int]:
+        if event_name in (Events.ITERATION_STARTED, Events.ITERATION_COMPLETED):
+            return engine.state.epoch_length
+        if event_name in (Events.EPOCH_STARTED, Events.EPOCH_COMPLETED):
+            return engine.state.max_epochs
+        return 1
+
+    def __call__(self, engine: Engine, logger: ProgressBar, event_name: Union[str, Events]) -> None:
+
+        pbar_total = self.get_max_number_events(event_name, engine)
+        if logger.pbar is None:
+            logger._reset(pbar_total=pbar_total)
+
+        max_epochs = engine.state.max_epochs
+        default_desc = "Iteration" if max_epochs == 1 else "Epoch"
+
+        desc = self.tag or default_desc
+        max_num_of_closing_events = self.get_max_number_events(self.closing_event_name, engine)
+        if max_num_of_closing_events and max_num_of_closing_events > 1:
+            global_step = engine.state.get_event_attrib_value(self.closing_event_name)
+            desc += f" [{global_step}/{max_num_of_closing_events}]"
+        logger.pbar.set_description(desc)  # type: ignore[attr-defined]
+
+        metrics = self._setup_output_metrics(engine)
+
+        rendered_metrics = OrderedDict()
+        for key, value in metrics.items():
+            if isinstance(value, torch.Tensor):
+                if value.ndimension() == 0:
+                    rendered_metrics[key] = value.item()
+                elif value.ndimension() == 1:
+                    for i, v in enumerate(value):
+                        k = f"{key}_{i}"
+                        rendered_metrics[k] = v.item()
+                else:
+                    warnings.warn(f"ProgressBar can not log tensor with {value.ndimension()} dimensions")
+            else:
+                rendered_metrics[key] = value
+
+        if rendered_metrics:
+            logger.pbar.set_postfix(rendered_metrics)  # type: ignore[attr-defined]
+
+        global_step = engine.state.get_event_attrib_value(event_name)
+        if pbar_total is not None:
+            global_step = (global_step - 1) % pbar_total + 1
+        logger.pbar.update(global_step - logger.pbar.n)  # type: ignore[attr-defined]

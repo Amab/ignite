@@ -10,7 +10,7 @@ import ignite.distributed as idist
 from ignite.engine import Engine, Events, State
 from ignite.engine.deterministic import keep_random_state
 from ignite.metrics import Average
-from tests.ignite.engine import BatchChecker, EpochCounter, IterationCounter, get_iterable_dataset
+from tests.ignite.engine import BatchChecker, EpochCounter, IterationCounter
 
 
 def test_terminate():
@@ -193,7 +193,7 @@ def test_iteration_events_are_fired():
     assert iteration_complete.call_count == num_batches * max_epochs
 
     expected_calls = []
-    for i in range(max_epochs * num_batches):
+    for _ in range(max_epochs * num_batches):
         expected_calls.append(call.iteration_started(engine))
         expected_calls.append(call.iteration_complete(engine))
 
@@ -352,9 +352,6 @@ def test_run_asserts():
     with pytest.raises(ValueError, match=r"Input data has zero size. Please provide non-empty data"):
         engine.run([])
 
-    with pytest.warns(UserWarning, match="Argument seed is deprecated"):
-        engine.run([0, 1, 2, 3, 4], seed=1234)
-
 
 def test_state_get_event_attrib_value():
     state = State()
@@ -449,9 +446,7 @@ def _test_check_triggered_events(data, max_epochs, epoch_length, exp_iter_stops=
     }
 
     for n, handler in handlers.items():
-        assert handler.call_count == expected_num_calls[n], "{}: {} vs {}".format(
-            n, handler.call_count, expected_num_calls[n]
-        )
+        assert handler.call_count == expected_num_calls[n], f"{n}: {handler.call_count} vs {expected_num_calls[n]}"
 
 
 def _test_run_check_triggered_events():
@@ -505,14 +500,14 @@ def test_run_check_triggered_events_on_iterator():
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif(torch.cuda.device_count() < 1, reason="Skip if no GPU")
-def test_distrib_gpu(distributed_context_single_node_nccl):
+def test_distrib_nccl_gpu(distributed_context_single_node_nccl):
     _test_run_check_triggered_events_on_iterator()
     _test_run_check_triggered_events()
 
 
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
-def test_distrib_cpu(distributed_context_single_node_gloo):
+def test_distrib_gloo_cpu_or_gpu(distributed_context_single_node_gloo):
     _test_run_check_triggered_events_on_iterator()
     _test_run_check_triggered_events()
 
@@ -520,7 +515,7 @@ def test_distrib_cpu(distributed_context_single_node_gloo):
 @pytest.mark.multinode_distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif("MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
-def test_multinode_distrib_cpu(distributed_context_multi_node_gloo):
+def test_multinode_distrib_gloo_cpu_or_gpu(distributed_context_multi_node_gloo):
     _test_run_check_triggered_events_on_iterator()
     _test_run_check_triggered_events()
 
@@ -528,7 +523,7 @@ def test_multinode_distrib_cpu(distributed_context_multi_node_gloo):
 @pytest.mark.multinode_distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif("GPU_MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
-def test_multinode_distrib_gpu(distributed_context_multi_node_nccl):
+def test_multinode_distrib_nccl_gpu(distributed_context_multi_node_nccl):
     _test_run_check_triggered_events_on_iterator()
     _test_run_check_triggered_events()
 
@@ -617,7 +612,7 @@ def test_altered_random_state():
 
 def test_engine_with_dataloader_no_auto_batching():
     # tests https://github.com/pytorch/ignite/issues/941
-    from torch.utils.data import DataLoader, BatchSampler, RandomSampler
+    from torch.utils.data import BatchSampler, DataLoader, RandomSampler
 
     data = torch.rand(64, 4, 10)
     data_loader = DataLoader(
@@ -707,8 +702,7 @@ def test_run_finite_iterator_no_epoch_length_2():
 
 def test_faq_inf_iterator_with_epoch_length():
     # Code snippet from FAQ
-
-    import torch
+    # import torch
 
     torch.manual_seed(12)
 
@@ -720,7 +714,7 @@ def test_faq_inf_iterator_with_epoch_length():
     def train_step(trainer, batch):
         # ...
         s = trainer.state
-        print("{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch.norm()))
+        print(f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch.norm():.3f}")
 
     trainer = Engine(train_step)
     # We need to specify epoch_length to define the epoch
@@ -732,8 +726,7 @@ def test_faq_inf_iterator_with_epoch_length():
 
 def test_faq_inf_iterator_no_epoch_length():
     # Code snippet from FAQ
-
-    import torch
+    # import torch
 
     torch.manual_seed(12)
 
@@ -745,7 +738,7 @@ def test_faq_inf_iterator_no_epoch_length():
     def train_step(trainer, batch):
         # ...
         s = trainer.state
-        print("{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch.norm()))
+        print(f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch.norm():.3f}")
 
     trainer = Engine(train_step)
 
@@ -761,8 +754,7 @@ def test_faq_inf_iterator_no_epoch_length():
 
 def test_faq_fin_iterator_unknw_size():
     # Code snippet from FAQ
-
-    import torch
+    # import torch
 
     torch.manual_seed(12)
 
@@ -773,7 +765,7 @@ def test_faq_fin_iterator_unknw_size():
     def train_step(trainer, batch):
         # ...
         s = trainer.state
-        print("{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch))
+        print(f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch:.3f}")
 
     trainer = Engine(train_step)
 
@@ -787,9 +779,8 @@ def test_faq_fin_iterator_unknw_size():
     assert trainer.state.epoch == 5
     assert trainer.state.iteration == 5 * 11
 
-    # # # # #
-
-    import torch
+    # Code snippet from FAQ
+    # import torch
 
     torch.manual_seed(12)
 
@@ -800,7 +791,7 @@ def test_faq_fin_iterator_unknw_size():
     def val_step(evaluator, batch):
         # ...
         s = evaluator.state
-        print("{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch))
+        print(f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch:.3f}")
 
     evaluator = Engine(val_step)
 
@@ -813,8 +804,7 @@ def test_faq_fin_iterator_unknw_size():
 
 def test_faq_fin_iterator():
     # Code snippet from FAQ
-
-    import torch
+    # import torch
 
     torch.manual_seed(12)
 
@@ -827,7 +817,7 @@ def test_faq_fin_iterator():
     def train_step(trainer, batch):
         # ...
         s = trainer.state
-        print("{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch))
+        print(f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch:.3f}")
 
     trainer = Engine(train_step)
 
@@ -841,9 +831,8 @@ def test_faq_fin_iterator():
     assert trainer.state.epoch == 5
     assert trainer.state.iteration == 5 * size
 
-    # # # # #
-
-    import torch
+    # Code snippet from FAQ
+    # import torch
 
     torch.manual_seed(12)
 
@@ -856,7 +845,7 @@ def test_faq_fin_iterator():
     def val_step(evaluator, batch):
         # ...
         s = evaluator.state
-        print("{}/{} : {} - {:.3f}".format(s.epoch, s.max_epochs, s.iteration, batch))
+        print(f"{s.epoch}/{s.max_epochs} : {s.iteration} - {batch:.3f}")
 
     evaluator = Engine(val_step)
 
@@ -883,9 +872,9 @@ def test_set_data():
 
     def train_fn(e, batch):
         if e.state.iteration <= switch_iteration:
-            assert batch.shape[1] == 11, "{}: {}".format(e.state.iteration, batch.shape)
+            assert batch.shape[1] == 11, f"{e.state.iteration}: {batch.shape}"
         else:
-            assert batch.shape[1] == 22, "{}: {}".format(e.state.iteration, batch.shape)
+            assert batch.shape[1] == 22, f"{e.state.iteration}: {batch.shape}"
 
     trainer = Engine(train_fn)
 
@@ -894,3 +883,106 @@ def test_set_data():
         trainer.set_data(data2)
 
     trainer.run(data1, max_epochs=10)
+
+
+def test_run_with_max_iters():
+    max_iters = 8
+    engine = Engine(lambda e, b: 1)
+    engine.run([0] * 20, max_iters=max_iters)
+    assert engine.state.iteration == max_iters
+    assert engine.state.max_iters == max_iters
+
+
+def test_run_with_max_iters_greater_than_epoch_length():
+    max_iters = 73
+    engine = Engine(lambda e, b: 1)
+    engine.run([0] * 20, max_iters=max_iters)
+    assert engine.state.iteration == max_iters
+
+
+def test_run_with_invalid_max_iters_and_max_epoch():
+    max_iters = 12
+    max_epochs = 2
+    engine = Engine(lambda e, b: 1)
+    with pytest.raises(
+        ValueError,
+        match=r"Arguments max_iters and max_epochs are mutually exclusive."
+        "Please provide only max_epochs or max_iters.",
+    ):
+        engine.run([0] * 20, max_iters=max_iters, max_epochs=max_epochs)
+
+
+def test_epoch_events_fired():
+    max_iters = 32
+    engine = Engine(lambda e, b: 1)
+
+    @engine.on(Events.EPOCH_COMPLETED)
+    def fired_event(engine):
+        assert engine.state.iteration % engine.state.epoch_length == 0
+
+    engine.run([0] * 10, max_iters=max_iters)
+
+
+def test_is_done_with_max_iters():
+    state = State(iteration=100, epoch=1, max_epochs=3, epoch_length=100, max_iters=250)
+    assert not Engine._is_done(state)
+
+    state = State(iteration=250, epoch=1, max_epochs=3, epoch_length=100, max_iters=250)
+    assert Engine._is_done(state)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 1, reason="Skip if no GPU")
+def test_batch_is_released_before_new_one_is_loaded_on_cuda():
+    torch.cuda.empty_cache()
+
+    engine = Engine(lambda e, b: None)
+
+    def _test():
+        mem_consumption = []
+
+        def dataloader():
+            for _ in range(4):
+                mem_consumption.append(torch.cuda.memory_allocated())
+                batch = torch.randn(10).cuda()
+                mem_consumption.append(torch.cuda.memory_allocated())
+                yield batch
+
+        engine.run(dataloader(), max_epochs=2, epoch_length=2)
+        return mem_consumption
+
+    mem_consumption1 = _test()
+    # mem_consumption should look like [0, 512, 512, 512, 512, 512, 512, 512]
+    assert len(set(mem_consumption1[1:])) == 1
+
+    mem_consumption2 = _test()
+    assert len(set(mem_consumption2[1:])) == 1
+
+    assert mem_consumption1 == mem_consumption2
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 1, reason="Skip if no GPU")
+def test_output_is_released_before_new_one_is_assigned_on_cuda():
+    torch.cuda.empty_cache()
+
+    def _test():
+        mem_consumption = []
+
+        def update_fn(engine, batch):
+            mem_consumption.append(torch.cuda.memory_allocated())
+            output = torch.rand(10).cuda()
+            mem_consumption.append(torch.cuda.memory_allocated())
+            return output
+
+        engine = Engine(update_fn)
+        engine.run([0, 1], max_epochs=2)
+
+        return mem_consumption
+
+    mem_consumption1 = _test()
+    # mem_consumption ~ [0, 512, 0, 512, 0, 512, 0, 512]
+    assert len(set(mem_consumption1)) == 2
+
+    mem_consumption2 = _test()
+    assert len(set(mem_consumption2)) == 2
+
+    assert mem_consumption1 == mem_consumption2

@@ -1,5 +1,4 @@
-import warnings
-from typing import Callable, Sequence, Union
+from typing import Callable, Sequence, Union, cast
 
 import torch
 
@@ -20,60 +19,55 @@ class _BasePrecisionRecall(_BaseClassification):
         is_multilabel: bool = False,
         device: Union[str, torch.device] = torch.device("cpu"),
     ):
-        if idist.get_world_size() > 1:
-            if (not average) and is_multilabel:
-                warnings.warn(
-                    "Precision/Recall metrics do not work in distributed setting when average=False "
-                    "and is_multilabel=True. Results are not reduced across computing devices. Computed result "
-                    "corresponds to the local rank's (single process) result.",
-                    RuntimeWarning,
-                )
 
         self._average = average
-        self._true_positives = None
-        self._positives = None
         self.eps = 1e-20
+        self._updated = False
         super(_BasePrecisionRecall, self).__init__(
             output_transform=output_transform, is_multilabel=is_multilabel, device=device
         )
 
     @reinit__is_reduced
     def reset(self) -> None:
+        self._true_positives = 0  # type: Union[int, torch.Tensor]
+        self._positives = 0  # type: Union[int, torch.Tensor]
+        self._updated = False
+
         if self._is_multilabel:
             init_value = 0.0 if self._average else []
-            kws = {"dtype": torch.float64, "device": self._device}
-            self._true_positives = torch.tensor(init_value, **kws)
-            self._positives = torch.tensor(init_value, **kws)
-        else:
-            self._true_positives = 0
-            self._positives = 0
+            self._true_positives = torch.tensor(init_value, dtype=torch.float64, device=self._device)
+            self._positives = torch.tensor(init_value, dtype=torch.float64, device=self._device)
 
         super(_BasePrecisionRecall, self).reset()
 
     def compute(self) -> Union[torch.Tensor, float]:
-        is_scalar = not isinstance(self._positives, torch.Tensor) or self._positives.ndim == 0
-        if is_scalar and self._positives == 0:
+        if not self._updated:
             raise NotComputableError(
-                "{} must have at least one example before it can be computed.".format(self.__class__.__name__)
+                f"{self.__class__.__name__} must have at least one example before it can be computed."
             )
-
-        if not (self._type == "multilabel" and not self._average):
-            if not self._is_reduced:
-                self._true_positives = idist.all_reduce(self._true_positives)
-                self._positives = idist.all_reduce(self._positives)
-                self._is_reduced = True
+        if not self._is_reduced:
+            if not (self._type == "multilabel" and not self._average):
+                self._true_positives = idist.all_reduce(self._true_positives)  # type: ignore[assignment]
+                self._positives = idist.all_reduce(self._positives)  # type: ignore[assignment]
+            else:
+                self._true_positives = cast(torch.Tensor, idist.all_gather(self._true_positives))
+                self._positives = cast(torch.Tensor, idist.all_gather(self._positives))
+            self._is_reduced = True  # type: bool
 
         result = self._true_positives / (self._positives + self.eps)
 
         if self._average:
-            return result.mean().item()
+            return cast(torch.Tensor, result).mean().item()
         else:
             return result
 
 
 class Precision(_BasePrecisionRecall):
-    """
-    Calculates precision for binary and multiclass data.
+    r"""Calculates precision for binary and multiclass data.
+
+    .. math:: \text{Precision} = \frac{ TP }{ TP + FP }
+
+    where :math:`\text{TP}` is true positives and :math:`\text{FP}` is false positives.
 
     - ``update`` must receive output of the form ``(y_pred, y)`` or ``{'y_pred': y_pred, 'y': y}``.
     - `y_pred` must be in the following shape (batch_size, num_categories, ...) or (batch_size, ...).
@@ -96,8 +90,8 @@ class Precision(_BasePrecisionRecall):
 
     .. code-block:: python
 
-        precision = Precision(average=False, is_multilabel=True)
-        recall = Recall(average=False, is_multilabel=True)
+        precision = Precision(average=False)
+        recall = Recall(average=False)
         F1 = precision * recall * 2 / (precision + recall + 1e-20)
         F1 = MetricsLambda(lambda t: torch.mean(t).item(), F1)
 
@@ -107,22 +101,17 @@ class Precision(_BasePrecisionRecall):
         as tensors before computing a metric. This can potentially lead to a memory error if the input data is larger
         than available RAM.
 
-    .. warning::
-
-        In multilabel cases, if average is False, current implementation does not work with distributed computations.
-        Results are not reduced across the GPUs. Computed result corresponds to the local rank's (single GPU) result.
-
 
     Args:
-        output_transform (callable, optional): a callable that is used to transform the
+        output_transform: a callable that is used to transform the
             :class:`~ignite.engine.engine.Engine`'s ``process_function``'s output into the
             form expected by the metric. This can be useful if, for example, you have a multi-output model and
             you want to compute the metric with respect to one of the outputs.
-        average (bool, optional): if True, precision is computed as the unweighted average (across all classes
+        average: if True, precision is computed as the unweighted average (across all classes
             in multiclass case), otherwise, returns a tensor with the precision (for each class in multiclass case).
-        is_multilabel (bool, optional) flag to use in multilabel case. By default, value is False. If True, average
+        is_multilabel: flag to use in multilabel case. By default, value is False. If True, average
             parameter should be True and the average is computed across samples, instead of classes.
-        device (str or torch.device): specifies which device updates are accumulated on. Setting the metric's
+        device: specifies which device updates are accumulated on. Setting the metric's
             device to be the same as your ``update`` arguments ensures the ``update`` method is non-blocking. By
             default, CPU.
 
@@ -152,8 +141,8 @@ class Precision(_BasePrecisionRecall):
             num_classes = y_pred.size(1)
             if y.max() + 1 > num_classes:
                 raise ValueError(
-                    "y_pred contains less classes than y. Number of predicted classes is {}"
-                    " and element in y has invalid class = {}.".format(num_classes, y.max().item() + 1)
+                    f"y_pred contains less classes than y. Number of predicted classes is {num_classes}"
+                    f" and element in y has invalid class = {y.max().item() + 1}."
                 )
             y = to_onehot(y.view(-1), num_classes=num_classes)
             indices = torch.argmax(y_pred, dim=1).view(-1)
@@ -177,11 +166,13 @@ class Precision(_BasePrecisionRecall):
 
         if self._type == "multilabel":
             if not self._average:
-                self._true_positives = torch.cat([self._true_positives, true_positives], dim=0)
-                self._positives = torch.cat([self._positives, all_positives], dim=0)
+                self._true_positives = torch.cat([self._true_positives, true_positives], dim=0)  # type: torch.Tensor
+                self._positives = torch.cat([self._positives, all_positives], dim=0)  # type: torch.Tensor
             else:
                 self._true_positives += torch.sum(true_positives / (all_positives + self.eps))
                 self._positives += len(all_positives)
         else:
             self._true_positives += true_positives
             self._positives += all_positives
+
+        self._updated = True

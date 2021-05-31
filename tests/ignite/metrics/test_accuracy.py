@@ -13,223 +13,105 @@ torch.manual_seed(12)
 
 def test_no_update():
     acc = Accuracy()
-    with pytest.raises(NotComputableError):
+    with pytest.raises(NotComputableError, match=r"Accuracy must have at least one example before it can be computed"):
         acc.compute()
 
 
 def test__check_shape():
     acc = Accuracy()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"y and y_pred must have compatible shapes"):
         acc._check_shape((torch.randint(0, 2, size=(10, 1, 5, 12)).long(), torch.randint(0, 2, size=(10, 5, 6)).long()))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"y and y_pred must have compatible shapes"):
         acc._check_shape((torch.randint(0, 2, size=(10, 1, 6)).long(), torch.randint(0, 2, size=(10, 5, 6)).long()))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"y and y_pred must have compatible shapes"):
         acc._check_shape((torch.randint(0, 2, size=(10, 1)).long(), torch.randint(0, 2, size=(10, 5)).long()))
+
+
+def test__check_type():
+    acc = Accuracy()
+
+    with pytest.raises(RuntimeError, match=r"Invalid shapes of y"):
+        acc._check_type((torch.rand([1, 1, 1]), torch.rand([1])))
 
 
 def test_binary_wrong_inputs():
     acc = Accuracy()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"For binary cases, y must be comprised of 0's and 1's"):
         # y has not only 0 or 1 values
         acc.update((torch.randint(0, 2, size=(10,)).long(), torch.arange(0, 10).long()))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"For binary cases, y_pred must be comprised of 0's and 1's"):
         # y_pred values are not thresholded to 0, 1 values
-        acc.update((torch.rand(10,), torch.randint(0, 2, size=(10,)).long()))
+        acc.update((torch.rand(10,), torch.randint(0, 2, size=(10,)).long(),))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"y must have shape of "):
         # incompatible shapes
         acc.update((torch.randint(0, 2, size=(10,)).long(), torch.randint(0, 2, size=(10, 5)).long()))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"y must have shape of "):
         # incompatible shapes
         acc.update((torch.randint(0, 2, size=(10, 5, 6)).long(), torch.randint(0, 2, size=(10,)).long()))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"y must have shape of "):
         # incompatible shapes
         acc.update((torch.randint(0, 2, size=(10,)).long(), torch.randint(0, 2, size=(10, 5, 6)).long()))
 
 
-def test_binary_input_N():
-    # Binary accuracy on input of shape (N, 1) or (N, )
-    def _test():
-        acc = Accuracy()
+def test_binary_input():
 
-        y_pred = torch.randint(0, 2, size=(10,)).long()
-        y = torch.randint(0, 2, size=(10,)).long()
-        acc.update((y_pred, y))
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().ravel()
-        assert acc._type == "binary"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
+    acc = Accuracy()
 
-        # Batched Updates
+    def _test(y_pred, y, batch_size):
         acc.reset()
-        y_pred = torch.randint(0, 2, size=(100,)).long()
-        y = torch.randint(0, 2, size=(100,)).long()
-
-        n_iters = 16
-        batch_size = y.shape[0] // n_iters + 1
-
-        for i in range(n_iters):
-            idx = i * batch_size
-            acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
+        if batch_size > 1:
+            n_iters = y.shape[0] // batch_size + 1
+            for i in range(n_iters):
+                idx = i * batch_size
+                acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
+        else:
+            acc.update((y_pred, y))
 
         np_y = y.numpy().ravel()
         np_y_pred = y_pred.numpy().ravel()
+
         assert acc._type == "binary"
         assert isinstance(acc.compute(), float)
         assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
 
-    # check multiple random inputs as random exact occurencies are rare
-    for _ in range(10):
-        _test()
+    def get_test_cases():
 
+        test_cases = [
+            # Binary accuracy on input of shape (N, 1) or (N, )
+            (torch.randint(0, 2, size=(10,)).long(), torch.randint(0, 2, size=(10,)).long(), 1),
+            (torch.randint(0, 2, size=(10, 1)).long(), torch.randint(0, 2, size=(10, 1)).long(), 1),
+            # updated batches
+            (torch.randint(0, 2, size=(50,)).long(), torch.randint(0, 2, size=(50,)).long(), 16),
+            (torch.randint(0, 2, size=(50, 1)).long(), torch.randint(0, 2, size=(50, 1)).long(), 16),
+            # Binary accuracy on input of shape (N, L)
+            (torch.randint(0, 2, size=(10, 5)).long(), torch.randint(0, 2, size=(10, 5)).long(), 1),
+            (torch.randint(0, 2, size=(10, 8)).long(), torch.randint(0, 2, size=(10, 8)).long(), 1),
+            # updated batches
+            (torch.randint(0, 2, size=(50, 5)).long(), torch.randint(0, 2, size=(50, 5)).long(), 16),
+            (torch.randint(0, 2, size=(50, 8)).long(), torch.randint(0, 2, size=(50, 8)).long(), 16),
+            # Binary accuracy on input of shape (N, H, W, ...)
+            (torch.randint(0, 2, size=(4, 1, 12, 10)).long(), torch.randint(0, 2, size=(4, 1, 12, 10)).long(), 1),
+            (torch.randint(0, 2, size=(15, 1, 20, 10)).long(), torch.randint(0, 2, size=(15, 1, 20, 10)).long(), 1),
+            # updated batches
+            (torch.randint(0, 2, size=(50, 1, 12, 10)).long(), torch.randint(0, 2, size=(50, 1, 12, 10)).long(), 16),
+            (torch.randint(0, 2, size=(50, 1, 20, 10)).long(), torch.randint(0, 2, size=(50, 1, 20, 10)).long(), 16),
+        ]
 
-def test_binary_input_NL():
-    # Binary accuracy on input of shape (N, L)
-    def _test():
-        acc = Accuracy()
+        return test_cases
 
-        y_pred = torch.randint(0, 2, size=(10, 5)).long()
-        y = torch.randint(0, 2, size=(10, 5)).long()
-        acc.update((y_pred, y))
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().ravel()
-        assert acc._type == "binary"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        acc.reset()
-        y_pred = torch.randint(0, 2, size=(10, 1, 5)).long()
-        y = torch.randint(0, 2, size=(10, 1, 5)).long()
-        acc.update((y_pred, y))
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().ravel()
-        assert acc._type == "binary"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        # Batched Updates
-        acc.reset()
-        y_pred = torch.randint(0, 2, size=(100, 8)).long()
-        y = torch.randint(0, 2, size=(100, 8)).long()
-
-        n_iters = 16
-        batch_size = y.shape[0] // n_iters + 1
-
-        for i in range(n_iters):
-            idx = i * batch_size
-            acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
-
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().ravel()
-        assert acc._type == "binary"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-    # check multiple random inputs as random exact occurencies are rare
-    for _ in range(10):
-        _test()
-
-
-def test_binary_input_NHW():
-    # Binary accuracy on input of shape (N, H, W, ...)
-    def _test():
-        acc = Accuracy()
-
-        y_pred = torch.randint(0, 2, size=(4, 12, 10)).long()
-        y = torch.randint(0, 2, size=(4, 12, 10)).long()
-        acc.update((y_pred, y))
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().ravel()
-        assert acc._type == "binary"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        acc.reset()
-        y_pred = torch.randint(0, 2, size=(4, 1, 12, 10)).long()
-        y = torch.randint(0, 2, size=(4, 1, 12, 10)).long()
-        acc.update((y_pred, y))
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().ravel()
-        assert acc._type == "binary"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        # Batched Updates
-        acc.reset()
-        y_pred = torch.randint(0, 2, size=(100, 8, 8)).long()
-        y = torch.randint(0, 2, size=(100, 8, 8)).long()
-
-        batch_size = 16
-        n_iters = y.shape[0] // batch_size + 1
-
-        for i in range(n_iters):
-            idx = i * batch_size
-            acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
-
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().ravel()
-        assert acc._type == "binary"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-    # check multiple random inputs as random exact occurencies are rare
-    for _ in range(10):
-        _test()
-
-
-def test_binary_as_multiclass_input():
-    # Binary accuracy on input of shape (N, 1, ...)
-    def _test():
-        acc = Accuracy()
-
-        y_pred = torch.randint(0, 2, size=(4, 1)).long()
-        y = torch.randint(0, 2, size=(4,)).long()
-        acc.update((y_pred, y))
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().ravel()
-        assert acc._type == "binary"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        acc.reset()
-        y_pred = torch.randint(0, 2, size=(4, 1, 12)).long()
-        y = torch.randint(0, 2, size=(4, 12)).long()
-        acc.update((y_pred, y))
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().ravel()
-        assert acc._type == "binary"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        # Batched Updates
-        acc.reset()
-        y_pred = torch.randint(0, 2, size=(100, 1, 8, 8)).long()
-        y = torch.randint(0, 2, size=(100, 8, 8)).long()
-
-        batch_size = 16
-        n_iters = y.shape[0] // batch_size + 1
-
-        for i in range(n_iters):
-            idx = i * batch_size
-            acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
-
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().ravel()
-        assert acc._type == "binary"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-    # check multiple random inputs as random exact occurencies are rare
-    for _ in range(10):
-        _test()
+    for _ in range(5):
+        # check multiple random inputs as random exact occurencies are rare
+        test_cases = get_test_cases()
+        for y_pred, y, n_iters in test_cases:
+            _test(y_pred, y, n_iters)
 
 
 def test_multiclass_wrong_inputs():
@@ -248,176 +130,53 @@ def test_multiclass_wrong_inputs():
         acc.update((torch.rand(10), torch.randint(0, 5, size=(10, 5, 6)).long()))
 
 
-def test_multiclass_input_N():
-    # Multiclass input data of shape (N, ) and (N, C)
-    def _test():
-        acc = Accuracy()
+def test_multiclass_input():
+    acc = Accuracy()
 
-        y_pred = torch.rand(10, 4)
-        y = torch.randint(0, 4, size=(10,)).long()
-        acc.update((y_pred, y))
-        np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
-        np_y = y.numpy().ravel()
-        assert acc._type == "multiclass"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
+    def _test(y_pred, y, batch_size):
         acc.reset()
-        y_pred = torch.rand(10, 10, 1)
-        y = torch.randint(0, 18, size=(10, 1)).long()
-        acc.update((y_pred, y))
+        if batch_size > 1:
+            # Batched Updates
+            n_iters = y.shape[0] // batch_size + 1
+            for i in range(n_iters):
+                idx = i * batch_size
+                acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
+        else:
+            acc.update((y_pred, y))
+
         np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
         np_y = y.numpy().ravel()
+
         assert acc._type == "multiclass"
         assert isinstance(acc.compute(), float)
         assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
 
-        acc.reset()
-        y_pred = torch.rand(10, 18)
-        y = torch.randint(0, 18, size=(10,)).long()
-        acc.update((y_pred, y))
-        np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
-        np_y = y.numpy().ravel()
-        assert acc._type == "multiclass"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
+    def get_test_cases():
 
-        acc.reset()
-        y_pred = torch.rand(4, 10)
-        y = torch.randint(0, 10, size=(4,)).long()
-        acc.update((y_pred, y))
-        np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
-        np_y = y.numpy().ravel()
-        assert acc._type == "multiclass"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
+        test_cases = [
+            # Multiclass input data of shape (N, ) and (N, C)
+            (torch.rand(10, 4), torch.randint(0, 4, size=(10,)).long(), 1),
+            (torch.rand(10, 10, 1), torch.randint(0, 18, size=(10, 1)).long(), 1),
+            (torch.rand(10, 18), torch.randint(0, 18, size=(10,)).long(), 1),
+            (torch.rand(4, 10), torch.randint(0, 10, size=(4,)).long(), 1),
+            # 2-classes
+            (torch.rand(4, 2), torch.randint(0, 2, size=(4,)).long(), 1),
+            (torch.rand(100, 5), torch.randint(0, 5, size=(100,)).long(), 16),
+            # Multiclass input data of shape (N, L) and (N, C, L)
+            (torch.rand(10, 4, 5), torch.randint(0, 4, size=(10, 5)).long(), 1),
+            (torch.rand(4, 10, 5), torch.randint(0, 10, size=(4, 5)).long(), 1),
+            (torch.rand(100, 9, 7), torch.randint(0, 9, size=(100, 7)).long(), 16),
+            # Multiclass input data of shape (N, H, W, ...) and (N, C, H, W, ...)
+            (torch.rand(4, 5, 12, 10), torch.randint(0, 5, size=(4, 12, 10)).long(), 1),
+            (torch.rand(100, 3, 8, 8), torch.randint(0, 3, size=(100, 8, 8)).long(), 16),
+        ]
+        return test_cases
 
-        # 2-classes
-        acc.reset()
-        y_pred = torch.rand(4, 2)
-        y = torch.randint(0, 2, size=(4,)).long()
-        acc.update((y_pred, y))
-        np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
-        np_y = y.numpy().ravel()
-        assert acc._type == "multiclass"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        # Batched Updates
-        acc.reset()
-        y_pred = torch.rand(100, 5)
-        y = torch.randint(0, 5, size=(100,)).long()
-
-        batch_size = 16
-        n_iters = y.shape[0] // batch_size + 1
-
-        for i in range(n_iters):
-            idx = i * batch_size
-            acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
-
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
-        assert acc._type == "multiclass"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-    # check multiple random inputs as random exact occurencies are rare
-    for _ in range(10):
-        _test()
-
-
-def test_multiclass_input_NL():
-    # Multiclass input data of shape (N, L) and (N, C, L)
-    def _test():
-        acc = Accuracy()
-
-        y_pred = torch.rand(10, 4, 5)
-        y = torch.randint(0, 4, size=(10, 5)).long()
-        acc.update((y_pred, y))
-        np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
-        np_y = y.numpy().ravel()
-        assert acc._type == "multiclass"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        acc.reset()
-        y_pred = torch.rand(4, 10, 5)
-        y = torch.randint(0, 10, size=(4, 5)).long()
-        acc.update((y_pred, y))
-        np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
-        np_y = y.numpy().ravel()
-        assert acc._type == "multiclass"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        # Batched Updates
-        acc.reset()
-        y_pred = torch.rand(100, 9, 7)
-        y = torch.randint(0, 9, size=(100, 7)).long()
-
-        batch_size = 16
-        n_iters = y.shape[0] // batch_size + 1
-
-        for i in range(n_iters):
-            idx = i * batch_size
-            acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
-
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
-        assert acc._type == "multiclass"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-    # check multiple random inputs as random exact occurencies are rare
-    for _ in range(10):
-        _test()
-
-
-def test_multiclass_input_NHW():
-    # Multiclass input data of shape (N, H, W, ...) and (N, C, H, W, ...)
-    def _test():
-        acc = Accuracy()
-
-        y_pred = torch.rand(4, 5, 12, 10)
-        y = torch.randint(0, 5, size=(4, 12, 10)).long()
-        acc.update((y_pred, y))
-        np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
-        np_y = y.numpy().ravel()
-        assert acc._type == "multiclass"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        acc.reset()
-        y_pred = torch.rand(4, 5, 10, 12, 8)
-        y = torch.randint(0, 5, size=(4, 10, 12, 8)).long()
-        acc.update((y_pred, y))
-        np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
-        np_y = y.numpy().ravel()
-        assert acc._type == "multiclass"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        # Batched Updates
-        acc.reset()
-        y_pred = torch.rand(100, 3, 8, 8)
-        y = torch.randint(0, 3, size=(100, 8, 8)).long()
-
-        batch_size = 16
-        n_iters = y.shape[0] // batch_size + 1
-
-        for i in range(n_iters):
-            idx = i * batch_size
-            acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
-
-        np_y = y.numpy().ravel()
-        np_y_pred = y_pred.numpy().argmax(axis=1).ravel()
-        assert acc._type == "multiclass"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-    # check multiple random inputs as random exact occurencies are rare
-    for _ in range(10):
-        _test()
+    for _ in range(5):
+        # check multiple random inputs as random exact occurencies are rare
+        test_cases = get_test_cases()
+        for y_pred, y, batch_size in test_cases:
+            _test(y_pred, y, batch_size)
 
 
 def to_numpy_multilabel(y):
@@ -448,147 +207,55 @@ def test_multilabel_wrong_inputs():
         acc.update((torch.randint(0, 2, size=(10, 1)), torch.randint(0, 2, size=(10, 1)).long()))
 
 
-def test_multilabel_input_N():
-    # Multilabel input data of shape (N, C, ...) and (N, C, ...)
+def test_multilabel_input():
+    acc = Accuracy(is_multilabel=True)
 
-    def _test():
-        acc = Accuracy(is_multilabel=True)
-        y_pred = torch.randint(0, 2, size=(10, 4))
-        y = torch.randint(0, 2, size=(10, 4)).long()
-        acc.update((y_pred, y))
-        np_y_pred = y_pred.numpy()
-        np_y = y.numpy()
-        assert acc._type == "multilabel"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
+    def _test(y_pred, y, batch_size):
         acc.reset()
-        y_pred = torch.randint(0, 2, size=(50, 7)).long()
-        y = torch.randint(0, 2, size=(50, 7)).long()
-        acc.update((y_pred, y))
-        np_y_pred = y_pred.numpy()
-        np_y = y.numpy()
+        if batch_size > 1:
+            n_iters = y.shape[0] // batch_size + 1
+            for i in range(n_iters):
+                idx = i * batch_size
+                acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
+        else:
+            acc.update((y_pred, y))
+
+        np_y_pred = to_numpy_multilabel(y_pred)
+        np_y = to_numpy_multilabel(y)
+
         assert acc._type == "multilabel"
         assert isinstance(acc.compute(), float)
         assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
 
-        # Batched Updates
-        acc.reset()
-        y_pred = torch.randint(0, 2, size=(100, 4))
-        y = torch.randint(0, 2, size=(100, 4)).long()
+    def get_test_cases():
 
-        batch_size = 16
-        n_iters = y.shape[0] // batch_size + 1
+        test_cases = [
+            # Multilabel input data of shape (N, C) and (N, C)
+            (torch.randint(0, 2, size=(10, 4)).long(), torch.randint(0, 2, size=(10, 4)).long(), 1),
+            (torch.randint(0, 2, size=(10, 7)).long(), torch.randint(0, 2, size=(10, 7)).long(), 1),
+            # updated batches
+            (torch.randint(0, 2, size=(50, 4)).long(), torch.randint(0, 2, size=(50, 4)).long(), 16),
+            (torch.randint(0, 2, size=(50, 7)).long(), torch.randint(0, 2, size=(50, 7)).long(), 16),
+            # Multilabel input data of shape (N, H, W)
+            (torch.randint(0, 2, size=(10, 5, 10)).long(), torch.randint(0, 2, size=(10, 5, 10)).long(), 1),
+            (torch.randint(0, 2, size=(10, 4, 10)).long(), torch.randint(0, 2, size=(10, 4, 10)).long(), 1),
+            # updated batches
+            (torch.randint(0, 2, size=(50, 5, 10)).long(), torch.randint(0, 2, size=(50, 5, 10)).long(), 16),
+            (torch.randint(0, 2, size=(50, 4, 10)).long(), torch.randint(0, 2, size=(50, 4, 10)).long(), 16),
+            # Multilabel input data of shape (N, C, H, W, ...) and (N, C, H, W, ...)
+            (torch.randint(0, 2, size=(4, 5, 12, 10)).long(), torch.randint(0, 2, size=(4, 5, 12, 10)).long(), 1),
+            (torch.randint(0, 2, size=(4, 10, 12, 8)).long(), torch.randint(0, 2, size=(4, 10, 12, 8)).long(), 1),
+            # updated batches
+            (torch.randint(0, 2, size=(50, 5, 12, 10)).long(), torch.randint(0, 2, size=(50, 5, 12, 10)).long(), 16),
+            (torch.randint(0, 2, size=(50, 10, 12, 8)).long(), torch.randint(0, 2, size=(50, 10, 12, 8)).long(), 16),
+        ]
+        return test_cases
 
-        for i in range(n_iters):
-            idx = i * batch_size
-            acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
-
-        np_y = y.numpy()
-        np_y_pred = y_pred.numpy()
-        assert acc._type == "multilabel"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-    # check multiple random inputs as random exact occurencies are rare
-    for _ in range(10):
-        _test()
-
-
-def test_multilabel_input_NL():
-    # Multilabel input data of shape (N, C, L, ...) and (N, C, L, ...)
-
-    def _test():
-        acc = Accuracy(is_multilabel=True)
-
-        y_pred = torch.randint(0, 2, size=(10, 4, 5))
-        y = torch.randint(0, 2, size=(10, 4, 5)).long()
-        acc.update((y_pred, y))
-        np_y_pred = to_numpy_multilabel(y_pred)  # (N, C, L, ...) -> (N * L * ..., C)
-        np_y = to_numpy_multilabel(y)  # (N, C, L, ...) -> (N * L ..., C)
-        assert acc._type == "multilabel"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        acc.reset()
-        y_pred = torch.randint(0, 2, size=(4, 10, 8)).long()
-        y = torch.randint(0, 2, size=(4, 10, 8)).long()
-        acc.update((y_pred, y))
-        np_y_pred = to_numpy_multilabel(y_pred)  # (N, C, L, ...) -> (N * L * ..., C)
-        np_y = to_numpy_multilabel(y)  # (N, C, L, ...) -> (N * L ..., C)
-        assert acc._type == "multilabel"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        # Batched Updates
-        acc.reset()
-        y_pred = torch.randint(0, 2, size=(100, 4, 5))
-        y = torch.randint(0, 2, size=(100, 4, 5)).long()
-
-        batch_size = 16
-        n_iters = y.shape[0] // batch_size + 1
-
-        for i in range(n_iters):
-            idx = i * batch_size
-            acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
-
-        np_y_pred = to_numpy_multilabel(y_pred)  # (N, C, L, ...) -> (N * L * ..., C)
-        np_y = to_numpy_multilabel(y)  # (N, C, L, ...) -> (N * L ..., C)
-        assert acc._type == "multilabel"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-    # check multiple random inputs as random exact occurencies are rare
-    for _ in range(10):
-        _test()
-
-
-def test_multilabel_input_NHW():
-    # Multilabel input data of shape (N, C, H, W, ...) and (N, C, H, W, ...)
-
-    def _test():
-        acc = Accuracy(is_multilabel=True)
-
-        y_pred = torch.randint(0, 2, size=(4, 5, 12, 10))
-        y = torch.randint(0, 2, size=(4, 5, 12, 10)).long()
-        acc.update((y_pred, y))
-        np_y_pred = to_numpy_multilabel(y_pred)  # (N, C, H, W, ...) -> (N * H * W ..., C)
-        np_y = to_numpy_multilabel(y)  # (N, C, H, W, ...) -> (N * H * W ..., C)
-        assert acc._type == "multilabel"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        acc.reset()
-        y_pred = torch.randint(0, 2, size=(4, 10, 12, 8)).long()
-        y = torch.randint(0, 2, size=(4, 10, 12, 8)).long()
-        acc.update((y_pred, y))
-        np_y_pred = to_numpy_multilabel(y_pred)  # (N, C, H, W, ...) -> (N * H * W ..., C)
-        np_y = to_numpy_multilabel(y)  # (N, C, H, W, ...) -> (N * H * W ..., C)
-        assert acc._type == "multilabel"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-        # Batched Updates
-        acc.reset()
-        y_pred = torch.randint(0, 2, size=(100, 5, 12, 10))
-        y = torch.randint(0, 2, size=(100, 5, 12, 10)).long()
-
-        batch_size = 16
-        n_iters = y.shape[0] // batch_size + 1
-
-        for i in range(n_iters):
-            idx = i * batch_size
-            acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
-
-        np_y_pred = to_numpy_multilabel(y_pred)  # (N, C, L, ...) -> (N * L * ..., C)
-        np_y = to_numpy_multilabel(y)  # (N, C, L, ...) -> (N * L ..., C)
-        assert acc._type == "multilabel"
-        assert isinstance(acc.compute(), float)
-        assert accuracy_score(np_y, np_y_pred) == pytest.approx(acc.compute())
-
-    # check multiple random inputs as random exact occurencies are rare
-    for _ in range(10):
-        _test()
+    for _ in range(5):
+        # check multiple random inputs as random exact occurencies are rare
+        test_cases = get_test_cases()
+        for y_pred, y, batch_size in test_cases:
+            _test(y_pred, y, batch_size)
 
 
 def test_incorrect_type():
@@ -621,9 +288,9 @@ def _test_distrib_multilabel_input_NHW(device):
         y = torch.randint(0, 2, size=(4, 5, 8, 10), device=device).long()
         acc.update((y_pred, y))
 
-        assert acc._num_correct.device == metric_device, "{}:{} vs {}:{}".format(
-            type(acc._num_correct.device), acc._num_correct.device, type(metric_device), metric_device
-        )
+        assert (
+            acc._num_correct.device == metric_device
+        ), f"{type(acc._num_correct.device)}:{acc._num_correct.device} vs {type(metric_device)}:{metric_device}"
 
         # gather y_pred, y
         y_pred = idist.all_gather(y_pred)
@@ -644,9 +311,9 @@ def _test_distrib_multilabel_input_NHW(device):
         y = torch.randint(0, 2, size=(4, 7, 10, 8), device=device).long()
         acc.update((y_pred, y))
 
-        assert acc._num_correct.device == metric_device, "{}:{} vs {}:{}".format(
-            type(acc._num_correct.device), acc._num_correct.device, type(metric_device), metric_device
-        )
+        assert (
+            acc._num_correct.device == metric_device
+        ), f"{type(acc._num_correct.device)}:{acc._num_correct.device} vs {type(metric_device)}:{metric_device}"
 
         # gather y_pred, y
         y_pred = idist.all_gather(y_pred)
@@ -680,9 +347,9 @@ def _test_distrib_multilabel_input_NHW(device):
             idx = i * batch_size
             acc.update((y_pred[idx : idx + batch_size], y[idx : idx + batch_size]))
 
-        assert acc._num_correct.device == metric_device, "{}:{} vs {}:{}".format(
-            type(acc._num_correct.device), acc._num_correct.device, type(metric_device), metric_device
-        )
+        assert (
+            acc._num_correct.device == metric_device
+        ), f"{type(acc._num_correct.device)}:{acc._num_correct.device} vs {type(metric_device)}:{metric_device}"
 
         # gather y_pred, y
         y_pred = idist.all_gather(y_pred)
@@ -736,9 +403,9 @@ def _test_distrib_integration_multiclass(device):
         data = list(range(n_iters))
         engine.run(data=data, max_epochs=n_epochs)
 
-        assert acc._num_correct.device == metric_device, "{}:{} vs {}:{}".format(
-            type(acc._num_correct.device), acc._num_correct.device, type(metric_device), metric_device
-        )
+        assert (
+            acc._num_correct.device == metric_device
+        ), f"{type(acc._num_correct.device)}:{acc._num_correct.device} vs {type(metric_device)}:{metric_device}"
 
         assert "acc" in engine.state.metrics
         res = engine.state.metrics["acc"]
@@ -789,9 +456,9 @@ def _test_distrib_integration_multilabel(device):
         data = list(range(n_iters))
         engine.run(data=data, max_epochs=n_epochs)
 
-        assert acc._num_correct.device == metric_device, "{}:{} vs {}:{}".format(
-            type(acc._num_correct.device), acc._num_correct.device, type(metric_device), metric_device
-        )
+        assert (
+            acc._num_correct.device == metric_device
+        ), f"{type(acc._num_correct.device)}:{acc._num_correct.device} vs {type(metric_device)}:{metric_device}"
 
         assert "acc" in engine.state.metrics
         res = engine.state.metrics["acc"]
@@ -820,24 +487,25 @@ def _test_distrib_accumulator_device(device):
 
         acc = Accuracy(device=metric_device)
         assert acc._device == metric_device
-        assert acc._num_correct.device == metric_device, "{}:{} vs {}:{}".format(
-            type(acc._num_correct.device), acc._num_correct.device, type(metric_device), metric_device
-        )
+        assert (
+            acc._num_correct.device == metric_device
+        ), f"{type(acc._num_correct.device)}:{acc._num_correct.device} vs {type(metric_device)}:{metric_device}"
 
         y_pred = torch.randint(0, 2, size=(10,), device=device, dtype=torch.long)
         y = torch.randint(0, 2, size=(10,), device=device, dtype=torch.long)
         acc.update((y_pred, y))
 
-        assert acc._num_correct.device == metric_device, "{}:{} vs {}:{}".format(
-            type(acc._num_correct.device), acc._num_correct.device, type(metric_device), metric_device
-        )
+        assert (
+            acc._num_correct.device == metric_device
+        ), f"{type(acc._num_correct.device)}:{acc._num_correct.device} vs {type(metric_device)}:{metric_device}"
 
 
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif(torch.cuda.device_count() < 1, reason="Skip if no GPU")
-def test_distrib_gpu(distributed_context_single_node_nccl):
-    device = torch.device("cuda:{}".format(distributed_context_single_node_nccl["local_rank"]))
+def test_distrib_nccl_gpu(distributed_context_single_node_nccl):
+
+    device = idist.device()
     _test_distrib_multilabel_input_NHW(device)
     _test_distrib_integration_multiclass(device)
     _test_distrib_integration_multilabel(device)
@@ -846,9 +514,9 @@ def test_distrib_gpu(distributed_context_single_node_nccl):
 
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
-def test_distrib_cpu(distributed_context_single_node_gloo):
+def test_distrib_gloo_cpu_or_gpu(distributed_context_single_node_gloo):
 
-    device = torch.device("cpu")
+    device = idist.device()
     _test_distrib_multilabel_input_NHW(device)
     _test_distrib_integration_multiclass(device)
     _test_distrib_integration_multilabel(device)
@@ -867,28 +535,6 @@ def test_distrib_hvd(gloo_hvd_executor):
     gloo_hvd_executor(_test_distrib_integration_multiclass, (device,), np=nproc, do_init=True)
     gloo_hvd_executor(_test_distrib_integration_multilabel, (device,), np=nproc, do_init=True)
     gloo_hvd_executor(_test_distrib_accumulator_device, (device,), np=nproc, do_init=True)
-
-
-@pytest.mark.multinode_distributed
-@pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
-@pytest.mark.skipif("MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
-def test_multinode_distrib_cpu(distributed_context_multi_node_gloo):
-    device = torch.device("cpu")
-    _test_distrib_multilabel_input_NHW(device)
-    _test_distrib_integration_multiclass(device)
-    _test_distrib_integration_multilabel(device)
-    _test_distrib_accumulator_device(device)
-
-
-@pytest.mark.multinode_distributed
-@pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
-@pytest.mark.skipif("GPU_MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
-def test_multinode_distrib_gpu(distributed_context_multi_node_nccl):
-    device = torch.device("cuda:{}".format(distributed_context_multi_node_nccl["local_rank"]))
-    _test_distrib_multilabel_input_NHW(device)
-    _test_distrib_integration_multiclass(device)
-    _test_distrib_integration_multilabel(device)
-    _test_distrib_accumulator_device(device)
 
 
 @pytest.mark.tpu
@@ -916,3 +562,27 @@ def _test_distrib_xla_nprocs(index):
 def test_distrib_xla_nprocs(xmp_executor):
     n = int(os.environ["NUM_TPU_WORKERS"])
     xmp_executor(_test_distrib_xla_nprocs, args=(), nprocs=n)
+
+
+@pytest.mark.multinode_distributed
+@pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
+@pytest.mark.skipif("MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
+def test_multinode_distrib_gloo_cpu_or_gpu(distributed_context_multi_node_gloo):
+
+    device = idist.device()
+    _test_distrib_multilabel_input_NHW(device)
+    _test_distrib_integration_multiclass(device)
+    _test_distrib_integration_multilabel(device)
+    _test_distrib_accumulator_device(device)
+
+
+@pytest.mark.multinode_distributed
+@pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
+@pytest.mark.skipif("GPU_MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
+def test_multinode_distrib_nccl_gpu(distributed_context_multi_node_nccl):
+
+    device = idist.device()
+    _test_distrib_multilabel_input_NHW(device)
+    _test_distrib_integration_multiclass(device)
+    _test_distrib_integration_multilabel(device)
+    _test_distrib_accumulator_device(device)

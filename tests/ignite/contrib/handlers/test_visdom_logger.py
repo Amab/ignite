@@ -1,11 +1,18 @@
 import sys
-from unittest.mock import ANY, MagicMock, call
+from unittest.mock import ANY, MagicMock, call, patch
 
 import pytest
 import torch
 
-from ignite.contrib.handlers.visdom_logger import *
-from ignite.contrib.handlers.visdom_logger import _DummyExecutor
+from ignite.contrib.handlers.visdom_logger import (
+    GradsScalarHandler,
+    OptimizerParamsHandler,
+    OutputHandler,
+    VisdomLogger,
+    WeightsScalarHandler,
+    _DummyExecutor,
+    global_step_from_engine,
+)
 from ignite.engine import Engine, Events, State
 
 
@@ -183,7 +190,7 @@ def test_output_handler_metric_names(dirname):
 
     wrapper(mock_engine, mock_logger, Events.ITERATION_STARTED)
 
-    assert len(wrapper.windows) == 4 and all(["tag/a/{}".format(i) in wrapper.windows for i in range(4)])
+    assert len(wrapper.windows) == 4 and all([f"tag/a/{i}" in wrapper.windows for i in range(4)])
     assert wrapper.windows["tag/a/0"]["win"] is not None
     assert wrapper.windows["tag/a/1"]["win"] is not None
     assert wrapper.windows["tag/a/2"]["win"] is not None
@@ -571,7 +578,7 @@ def test_weights_scalar_handler():
 
         wrapper(mock_engine, mock_logger, Events.EPOCH_STARTED)
 
-        tag_prefix = "{}/".format(tag) if tag else ""
+        tag_prefix = f"{tag}/" if tag else ""
 
         assert mock_logger.vis.line.call_count == 4
         mock_logger.vis.line.assert_has_calls(
@@ -736,7 +743,7 @@ def test_grads_scalar_handler():
 
         wrapper(mock_engine, mock_logger, Events.EPOCH_STARTED)
 
-        tag_prefix = "{}/".format(tag) if tag else ""
+        tag_prefix = f"{tag}/" if tag else ""
 
         assert mock_logger.vis.line.call_count == 4
         mock_logger.vis.line.assert_has_calls(
@@ -929,19 +936,24 @@ def test_integration_with_executor_as_context_manager(visdom_server, visdom_serv
 
 @pytest.fixture
 def no_site_packages():
-    import sys
-    import visdom
+    import visdom  # noqa: F401
 
-    plx_module = sys.modules["visdom"]
+    visdom_module = sys.modules["visdom"]
     del sys.modules["visdom"]
     prev_path = list(sys.path)
     sys.path = [p for p in sys.path if "site-packages" not in p]
     yield "no_site_packages"
     sys.path = prev_path
-    sys.modules["visdom"] = plx_module
+    sys.modules["visdom"] = visdom_module
 
 
 def test_no_visdom(no_site_packages):
 
     with pytest.raises(RuntimeError, match=r"This contrib module requires visdom package"):
         VisdomLogger()
+
+
+def test_no_concurrent():
+    with pytest.raises(RuntimeError, match=r"This contrib module requires concurrent.futures"):
+        with patch.dict("sys.modules", {"concurrent.futures": None}):
+            VisdomLogger(num_workers=1)

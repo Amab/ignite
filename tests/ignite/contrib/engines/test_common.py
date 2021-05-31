@@ -15,6 +15,7 @@ from ignite.contrib.engines.common import (
     gen_save_best_models_by_val_score,
     save_best_model_by_val_score,
     setup_any_logging,
+    setup_clearml_logging,
     setup_common_training_handlers,
     setup_mlflow_logging,
     setup_neptune_logging,
@@ -38,7 +39,14 @@ class DummyModel(nn.Module):
 
 
 def _test_setup_common_training_handlers(
-    dirname, device, rank=0, local_rank=0, distributed=False, lr_scheduler=None, save_handler=None
+    dirname,
+    device,
+    rank=0,
+    local_rank=0,
+    distributed=False,
+    lr_scheduler=None,
+    save_handler=None,
+    output_transform=lambda loss: loss,
 ):
 
     lr = 0.01
@@ -48,7 +56,7 @@ def _test_setup_common_training_handlers(
     num_epochs = 10
 
     model = DummyModel().to(device)
-    if distributed and "cuda" in device:
+    if distributed and "cuda" in torch.device(device).type:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank,], output_device=local_rank)
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
@@ -64,7 +72,7 @@ def _test_setup_common_training_handlers(
         milestones_values = [(0, 0.0), (step_size, lr), (num_iters * (num_epochs - 1), 0.0)]
         lr_scheduler = PiecewiseLinear(optimizer, param_name="lr", milestones_values=milestones_values)
     else:
-        raise ValueError("Unknown lr_scheduler: {}".format(lr_scheduler))
+        raise ValueError(f"Unknown lr_scheduler: {lr_scheduler}")
 
     def update_fn(engine, batch):
         optimizer.zero_grad()
@@ -73,7 +81,7 @@ def _test_setup_common_training_handlers(
         loss = y_pred.mean()
         loss.backward()
         optimizer.step()
-        return loss
+        return output_transform(loss)
 
     train_sampler = None
     if distributed and idist.get_world_size() > 1:
@@ -104,7 +112,7 @@ def _test_setup_common_training_handlers(
     for cls in [
         TerminateOnNan,
     ]:
-        assert any([isinstance(h[0], cls) for h in handlers]), "{}".format(handlers)
+        assert any([isinstance(h[0], cls) for h in handlers]), f"{handlers}"
     assert "batch_loss" in trainer.state.metrics
 
     # Check saved checkpoint
@@ -119,9 +127,9 @@ def _test_setup_common_training_handlers(
             assert any([v in c for c in checkpoints])
 
     # Check LR scheduling
-    assert optimizer.param_groups[0]["lr"] <= lr * gamma ** (num_iters * num_epochs / step_size), "{} vs {}".format(
-        optimizer.param_groups[0]["lr"], lr * gamma ** (num_iters * num_epochs / step_size)
-    )
+    assert optimizer.param_groups[0]["lr"] <= lr * gamma ** (
+        num_iters * num_epochs / step_size
+    ), f"{optimizer.param_groups[0]['lr']} vs {lr * gamma ** (num_iters * num_epochs / step_size)}"
 
 
 def test_asserts_setup_common_training_handlers():
@@ -140,8 +148,21 @@ def test_asserts_setup_common_training_handlers():
         train_sampler = MagicMock(spec=DistributedSampler)
         setup_common_training_handlers(trainer, train_sampler=train_sampler)
 
-    with pytest.warns(UserWarning, match=r"Argument device is unused and deprecated"):
-        setup_common_training_handlers(trainer, device="cpu")
+    with pytest.raises(RuntimeError, match=r"This contrib module requires available GPU"):
+        setup_common_training_handlers(trainer, with_gpu_stats=True)
+
+    with pytest.raises(TypeError, match=r"Unhandled type of update_function's output."):
+        trainer = Engine(lambda e, b: None)
+        setup_common_training_handlers(
+            trainer,
+            output_names=["loss"],
+            with_pbar_on_iters=False,
+            with_pbars=False,
+            with_gpu_stats=False,
+            stop_on_nan=False,
+            clear_cuda_cache=False,
+        )
+        trainer.run([1])
 
 
 def test_no_warning_with_train_sampler(recwarn):
@@ -167,7 +188,6 @@ def test_assert_setup_common_training_handlers_wrong_train_sampler(distributed_c
 
 
 def test_setup_common_training_handlers(dirname, capsys):
-
     _test_setup_common_training_handlers(dirname, device="cpu")
 
     # Check epoch-wise pbar
@@ -175,7 +195,25 @@ def test_setup_common_training_handlers(dirname, capsys):
     out = captured.err.split("\r")
     out = list(map(lambda x: x.strip(), out))
     out = list(filter(None, out))
-    assert "Epoch" in out[-1] or "Epoch" in out[-2], "{}, {}".format(out[-2], out[-1])
+    assert "Epoch" in out[-1] or "Epoch" in out[-2], f"{out[-2]}, {out[-1]}"
+
+    _test_setup_common_training_handlers(dirname, device="cpu", output_transform=lambda loss: [loss])
+
+    # Check epoch-wise pbar
+    captured = capsys.readouterr()
+    out = captured.err.split("\r")
+    out = list(map(lambda x: x.strip(), out))
+    out = list(filter(None, out))
+    assert "Epoch" in out[-1] or "Epoch" in out[-2], f"{out[-2]}, {out[-1]}"
+
+    _test_setup_common_training_handlers(dirname, device="cpu", output_transform=lambda loss: {"batch_loss": loss})
+
+    # Check epoch-wise pbar
+    captured = capsys.readouterr()
+    out = captured.err.split("\r")
+    out = list(map(lambda x: x.strip(), out))
+    out = list(filter(None, out))
+    assert "Epoch" in out[-1] or "Epoch" in out[-2], f"{out[-2]}, {out[-1]}"
 
 
 def test_setup_common_training_handlers_using_save_handler(dirname, capsys):
@@ -188,7 +226,7 @@ def test_setup_common_training_handlers_using_save_handler(dirname, capsys):
     out = captured.err.split("\r")
     out = list(map(lambda x: x.strip(), out))
     out = list(filter(None, out))
-    assert "Epoch" in out[-1] or "Epoch" in out[-2], "{}, {}".format(out[-2], out[-1])
+    assert "Epoch" in out[-1] or "Epoch" in out[-2], f"{out[-2]}, {out[-1]}"
 
 
 def test_save_best_model_by_val_score(dirname):
@@ -244,7 +282,7 @@ def test_gen_save_best_models_by_val_score():
         [
             call(
                 obj_to_save,
-                "best_checkpoint_{}_val_acc={:.4f}.pt".format(e, p),
+                f"best_checkpoint_{e}_val_acc={p:.4f}.pt",
                 dict([("basename", "best_checkpoint"), ("score_name", "val_acc"), ("priority", p)]),
             )
             for e, p in zip([1, 2, 3, 4, 6, 7, 8, 9], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.61, 0.7])
@@ -276,7 +314,7 @@ def test_add_early_stopping_by_val_score():
 
 def test_deprecated_setup_any_logging():
 
-    with pytest.raises(DeprecationWarning, match=r"is deprecated since 0\.4\.0\."):
+    with pytest.raises(DeprecationWarning, match=r"deprecated since version 0.4.0"):
         setup_any_logging(None, None, None, None, None, None)
 
 
@@ -336,21 +374,21 @@ def _test_setup_logging(
     for cls in [
         output_handler_cls,
     ]:
-        assert any([isinstance(h[0], cls) for h in handlers]), "{}".format(handlers)
+        assert any([isinstance(h[0], cls) for h in handlers]), f"{handlers}"
 
     if with_optim:
         handlers = trainer._event_handlers[Events.ITERATION_STARTED]
         for cls in [
             opt_params_handler_cls,
         ]:
-            assert any([isinstance(h[0], cls) for h in handlers]), "{}".format(handlers)
+            assert any([isinstance(h[0], cls) for h in handlers]), f"{handlers}"
 
     if with_eval:
         handlers = evaluator._event_handlers[Events.COMPLETED]
         for cls in [
             output_handler_cls,
         ]:
-            assert any([isinstance(h[0], cls) for h in handlers]), "{}".format(handlers)
+            assert any([isinstance(h[0], cls) for h in handlers]), f"{handlers}"
 
     data = [0, 1, 2]
     trainer.run(data, max_epochs=10)
@@ -361,7 +399,7 @@ def _test_setup_logging(
         for v in [
             "events",
         ]:
-            assert any([v in c for c in tb_files]), "{}".format(tb_files)
+            assert any([v in c for c in tb_files]), f"{tb_files}"
 
     return x_logger
 
@@ -474,29 +512,49 @@ def test_setup_wandb_logging(dirname):
         setup_wandb_logging(MagicMock())
 
 
-def test_setup_trains_logging():
+def test_setup_clearml_logging():
 
-    handlers.trains_logger.TrainsLogger.set_bypass_mode(True)
+    handlers.clearml_logger.ClearMLLogger.set_bypass_mode(True)
 
     with pytest.warns(UserWarning, match=r"running in bypass mode"):
-        trains_logger = _test_setup_logging(
-            setup_logging_fn=setup_trains_logging,
+        clearml_logger = _test_setup_logging(
+            setup_logging_fn=setup_clearml_logging,
             kwargs_dict={},
-            output_handler_cls=handlers.trains_logger.OutputHandler,
-            opt_params_handler_cls=handlers.trains_logger.OptimizerParamsHandler,
+            output_handler_cls=handlers.clearml_logger.OutputHandler,
+            opt_params_handler_cls=handlers.clearml_logger.OptimizerParamsHandler,
             with_eval=False,
             with_optim=False,
         )
-        trains_logger.close()
-        trains_logger = _test_setup_logging(
-            setup_logging_fn=setup_trains_logging,
+        clearml_logger.close()
+        clearml_logger = _test_setup_logging(
+            setup_logging_fn=setup_clearml_logging,
             kwargs_dict={},
-            output_handler_cls=handlers.trains_logger.OutputHandler,
-            opt_params_handler_cls=handlers.trains_logger.OptimizerParamsHandler,
+            output_handler_cls=handlers.clearml_logger.OutputHandler,
+            opt_params_handler_cls=handlers.clearml_logger.OptimizerParamsHandler,
             with_eval=True,
             with_optim=True,
         )
-        trains_logger.close()
+        clearml_logger.close()
+        clearml_logger = _test_setup_logging(
+            setup_logging_fn=setup_trains_logging,
+            kwargs_dict={},
+            output_handler_cls=handlers.clearml_logger.OutputHandler,
+            opt_params_handler_cls=handlers.clearml_logger.OptimizerParamsHandler,
+            with_eval=True,
+            with_optim=True,
+        )
+        clearml_logger.close()
+
+    with pytest.warns(UserWarning, match="setup_trains_logging was renamed to setup_clearml_logging"):
+        clearml_logger = _test_setup_logging(
+            setup_logging_fn=setup_trains_logging,
+            kwargs_dict={},
+            output_handler_cls=handlers.clearml_logger.OutputHandler,
+            opt_params_handler_cls=handlers.clearml_logger.OptimizerParamsHandler,
+            with_eval=True,
+            with_optim=True,
+        )
+        clearml_logger.close()
 
 
 def test_setup_neptune_logging(dirname):
@@ -523,17 +581,19 @@ def test_setup_neptune_logging(dirname):
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif(torch.cuda.device_count() < 1, reason="Skip if no GPU")
-def test_distrib_gpu(dirname, distributed_context_single_node_nccl):
+def test_distrib_nccl_gpu(dirname, distributed_context_single_node_nccl):
+
     local_rank = distributed_context_single_node_nccl["local_rank"]
-    device = "cuda:{}".format(local_rank)
+    device = idist.device()
     _test_setup_common_training_handlers(dirname, device, rank=local_rank, local_rank=local_rank, distributed=True)
     test_add_early_stopping_by_val_score()
 
 
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
-def test_distrib_cpu(dirname, distributed_context_single_node_gloo):
-    device = "cpu"
+def test_distrib_gloo_cpu_or_gpu(dirname, distributed_context_single_node_gloo):
+
+    device = idist.device()
     local_rank = distributed_context_single_node_gloo["local_rank"]
     _test_setup_common_training_handlers(dirname, device, rank=local_rank, local_rank=local_rank, distributed=True)
     _test_setup_common_training_handlers(
@@ -548,8 +608,9 @@ def test_distrib_cpu(dirname, distributed_context_single_node_gloo):
 @pytest.mark.multinode_distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif("MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
-def test_multinode_distrib_cpu(dirname, distributed_context_multi_node_gloo):
-    device = "cpu"
+def test_multinode_distrib_gloo_cpu_or_gpu(dirname, distributed_context_multi_node_gloo):
+
+    device = idist.device()
     rank = distributed_context_multi_node_gloo["rank"]
     _test_setup_common_training_handlers(dirname, device, rank=rank)
     test_add_early_stopping_by_val_score()
@@ -558,9 +619,10 @@ def test_multinode_distrib_cpu(dirname, distributed_context_multi_node_gloo):
 @pytest.mark.multinode_distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif("GPU_MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
-def test_multinode_distrib_gpu(dirname, distributed_context_multi_node_nccl):
+def test_multinode_distrib_nccl_gpu(dirname, distributed_context_multi_node_nccl):
+
     local_rank = distributed_context_multi_node_nccl["local_rank"]
     rank = distributed_context_multi_node_nccl["rank"]
-    device = "cuda:{}".format(local_rank)
+    device = idist.device()
     _test_setup_common_training_handlers(dirname, device, rank=rank, local_rank=local_rank, distributed=True)
     test_add_early_stopping_by_val_score()

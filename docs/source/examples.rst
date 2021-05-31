@@ -20,7 +20,7 @@ Training a ResNet on CIFAR10 in various configurations:
 
     1) single gpu
     2) single node multiple gpus
-    3) multiple nodes and multilple gpus
+    3) multiple nodes and multiple gpus
     4) single or multiple TPUs
 
 - `CIFAR10 <https://github.com/pytorch/ignite/tree/master/examples/contrib/cifar10>`_ - This example displays usage of :doc:`distributed` helper module.
@@ -71,10 +71,9 @@ Reproducible trainings
 Inspired by `torchvision/references <https://github.com/pytorch/vision/tree/master/references>`_, we provide several
 reproducible baselines for vision tasks:
 
-- `ImageNet <https://github.com/pytorch/ignite/blob/master/examples/references/classification/imagenet>`_
-- `Pascal VOC2012 <https://github.com/pytorch/ignite/blob/master/examples/references/segmentation/pascal_voc2012>`_
+- `ImageNet <https://github.com/pytorch/ignite/tree/master/examples/references/classification/imagenet>`_
+- `Pascal VOC2012 <https://github.com/pytorch/ignite/tree/master/examples/references/segmentation/pascal_voc2012>`_
 
 Features:
 
-- Distributed training with mixed precision by `nvidia/apex <https://github.com/NVIDIA/apex/>`_
-- Experiments tracking with `MLflow <https://mlflow.org/>`_ or `Polyaxon <https://polyaxon.com/>`_ or `TRAINS <https://github.com/allegroai/trains/>`_
+- Distributed training: native or horovod and using `PyTorch native AMP <https://pytorch.org/docs/stable/notes/amp_examples.html>`_

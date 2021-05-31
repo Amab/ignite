@@ -1,8 +1,7 @@
 import os
 
-from torchvision import models
-from torchvision import datasets
-from torchvision.transforms import Compose, ToTensor, Normalize, Pad, RandomCrop, RandomHorizontalFlip
+from torchvision import datasets, models
+from torchvision.transforms import Compose, Normalize, Pad, RandomCrop, RandomHorizontalFlip, ToTensor
 
 train_transform = Compose(
     [
@@ -34,6 +33,6 @@ def get_model(name):
     if name in models.__dict__:
         fn = models.__dict__[name]
     else:
-        raise RuntimeError("Unknown model name {}".format(name))
+        raise RuntimeError(f"Unknown model name {name}")
 
     return fn(num_classes=10)

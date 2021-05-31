@@ -1,4 +1,4 @@
-from typing import Callable, Mapping, Optional, Tuple
+from typing import Any, Callable, Mapping, Optional, Tuple, cast
 
 import torch
 
@@ -38,10 +38,13 @@ if has_xla_support:
             return _XlaDistModel()
 
         @staticmethod
-        def create_from_backend(backend: str = XLA_TPU, **kwargs) -> "_XlaDistModel":
+        def create_from_backend(backend: str = XLA_TPU, **kwargs: Any) -> "_XlaDistModel":
+            if backend not in _XlaDistModel.available_backends:
+                raise ValueError(f"Backend should be one of '{_XlaDistModel.available_backends}'")
+
             return _XlaDistModel(backend=backend, **kwargs)
 
-        def __init__(self, backend=None, **kwargs):
+        def __init__(self, backend: Optional[str] = None, **kwargs: Any):
             """This is a private method. Please, use `create_from_backend` or `create_from_context`
             """
             super(_XlaDistModel, self).__init__()
@@ -50,17 +53,17 @@ if has_xla_support:
             else:
                 self._init_from_context()
 
-        def _create_from_backend(self, backend, **kwargs):
+        def _create_from_backend(self, backend: str, **kwargs: Any) -> None:
             xm.rendezvous("init")
 
-            self._backend = backend
+            self._backend = backend  # type: str
             self._setup_attrs()
 
-        def _init_from_context(self):
+        def _init_from_context(self) -> None:
             self._backend = XLA_TPU
             self._setup_attrs()
 
-        def _compute_nproc_per_node(self):
+        def _compute_nproc_per_node(self) -> int:
             tensor = torch.tensor([self.get_local_rank() + 1.0], dtype=torch.float).to(self.device())
             xm.all_reduce("max", [tensor,])
             return int(tensor.item())
@@ -75,13 +78,13 @@ if has_xla_support:
             return xm.xrt_world_size()
 
         def get_nproc_per_node(self) -> int:
-            return self._nproc_per_node
+            return cast(int, self._nproc_per_node)
 
         def get_nnodes(self) -> int:
-            return self._nnodes
+            return cast(int, self._nnodes)
 
         def get_node_rank(self) -> int:
-            return self._node
+            return cast(int, self._node)
 
         def device(self) -> torch.device:
             dev = torch_xla._XLAC._xla_get_default_device()
@@ -90,11 +93,13 @@ if has_xla_support:
         def backend(self) -> str:
             return self._backend
 
-        def finalize(self):
+        def finalize(self) -> None:
             pass
 
         @staticmethod
-        def _dist_worker_task_fn(local_rank, backend, fn, args, kwargs_dict):
+        def _dist_worker_task_fn(
+            local_rank: int, backend: str, fn: Callable, args: Tuple, kwargs_dict: Mapping
+        ) -> None:
             from ignite.distributed.utils import _set_model, finalize
 
             model = _XlaDistModel.create_from_backend(backend)
@@ -103,7 +108,7 @@ if has_xla_support:
             finalize()
 
         @staticmethod
-        def spawn(
+        def spawn(  # type: ignore[override]
             fn: Callable,
             args: Tuple,
             kwargs_dict: Optional[Mapping] = None,
@@ -111,8 +116,8 @@ if has_xla_support:
             nnodes: int = 1,
             node_rank: int = 0,
             backend: str = XLA_TPU,
-            **kwargs
-        ):
+            **kwargs: Any,
+        ) -> None:
             if "start_method" not in kwargs:
                 kwargs["start_method"] = "fork"
 
@@ -135,7 +140,7 @@ if has_xla_support:
 
         def _do_all_reduce(self, tensor: torch.Tensor, op: str = "SUM") -> torch.Tensor:
             if op not in self._reduce_op_map:
-                raise ValueError("Unsupported reduction operation: '{}'".format(op))
+                raise ValueError(f"Unsupported reduction operation: '{op}'")
             op = self._reduce_op_map[op]
             xm.all_reduce(op, [tensor,])
             return tensor
@@ -155,5 +160,5 @@ if has_xla_support:
             xm.all_reduce("sum", [tensor,])
             return tensor
 
-        def barrier(self):
+        def barrier(self) -> None:
             xm.rendezvous("barrier")

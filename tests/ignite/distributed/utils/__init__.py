@@ -16,16 +16,15 @@ def _sanity_check():
     assert _model.get_node_rank() < _model.get_nnodes()
 
 
-def _test_distrib_config(local_rank, backend, ws, true_device, rank=None):
-    assert idist.backend() == backend, "{} vs {}".format(idist.backend(), backend)
+def _test_distrib_config(local_rank, backend, ws, true_device, rank=None, true_init_method=None):
+    assert idist.backend() == backend, f"{idist.backend()} vs {backend}"
 
     this_device = idist.device()
     assert isinstance(this_device, torch.device)
-    if backend in ("nccl", "horovod") and "cuda" in this_device.type:
-        true_device = torch.device("{}:{}".format(true_device, local_rank))
-        assert this_device == true_device, "{} vs {}".format(this_device, true_device)
+    if backend in ("nccl", "gloo", "horovod") and "cuda" in this_device.type:
+        assert this_device.type == torch.device(true_device).type, f"{this_device} vs {true_device}"
     elif backend in ("gloo", "horovod"):
-        assert this_device == torch.device(true_device)
+        assert this_device.type == torch.device(true_device).type
     elif backend == "xla-tpu":
         assert true_device in this_device.type
 
@@ -43,9 +42,15 @@ def _test_distrib_config(local_rank, backend, ws, true_device, rank=None):
 
     _sanity_check()
 
+    if idist.model_name() == "native-dist":
+        from ignite.distributed.utils import _model
+
+        if true_init_method is not None:
+            assert _model._init_method == true_init_method
+
 
 def _test_sync(cls):
-    from ignite.distributed.utils import _set_model, _SerialModel
+    from ignite.distributed.utils import _SerialModel, _set_model
 
     _set_model(_SerialModel())
 
@@ -53,7 +58,17 @@ def _test_sync(cls):
 
     from ignite.distributed.utils import _model
 
-    assert isinstance(_model, cls), "{} vs {}".format(type(_model), cls)
+    assert isinstance(_model, cls), f"{type(_model)} vs {cls}"
+
+
+def _test_distrib__get_max_length(device):
+    ws = idist.get_world_size()
+    x = "_test_distrib__get_max_length" * (idist.get_rank() + 2)
+
+    from ignite.distributed.utils import _model
+
+    res = _model._get_max_length(x, device)
+    assert res == len("_test_distrib__get_max_length" * (ws + 1))
 
 
 def _test_distrib_all_reduce(device):
@@ -65,9 +80,32 @@ def _test_distrib_all_reduce(device):
     res = idist.all_reduce(t)
     assert res.item() == 10 * idist.get_world_size()
 
-    t = torch.tensor(idist.get_rank(), device=device)
+    rank = idist.get_rank()
+    t = torch.tensor(rank * 2.0 + 1.0, device=device)
     res = idist.all_reduce(t)
-    assert res.item() == sum([i for i in range(idist.get_world_size())])
+    assert res.item() == sum([i * 2.0 + 1.0 for i in range(idist.get_world_size())])
+
+    t = torch.tensor(rank * 2.0 + 1.0, device=device)
+    res = idist.all_reduce(t, "MIN").item()
+    true_val = min([i * 2 + 1 for i in range(idist.get_world_size())])
+    assert res == true_val, f"{res} vs {true_val}"
+
+    t = torch.tensor(rank * 2.0 + 1.0, device=device)
+    res = idist.all_reduce(t, "MAX").item()
+    true_val = max([i * 2.0 + 1.0 for i in range(idist.get_world_size())])
+    assert res == true_val, f"{res} vs {true_val}"
+
+    t = torch.ones(4, 4, device=device) * (rank * 2.0 + 1.0)
+    res = idist.all_reduce(t, "MAX")
+    true_val = torch.ones(4, 4, device=device) * ((idist.get_world_size() - 1) * 2.0 + 1.0)
+    assert res.equal(true_val), f"{res} vs {true_val}"
+
+    t = torch.tensor(rank * 2.0 + 1.0, device=device)
+    res = idist.all_reduce(t, "PRODUCT").item()
+    true_val = 1
+    for v in [i * 2.0 + 1.0 for i in range(idist.get_world_size())]:
+        true_val *= v
+    assert res == true_val, f"{res} vs {true_val}"
 
     if idist.get_world_size() > 1:
         with pytest.raises(TypeError, match=r"Unhandled input type"):
@@ -78,12 +116,12 @@ def _test_distrib_all_reduce(device):
 
         t = torch.tensor([0, 1, 2])
         res = idist.all_reduce(t)
-        assert res.device == t.device, "{} vs {}".format(res.device, t.device)
+        assert res.device == t.device, f"{res.device} vs {t.device}"
 
 
 def _test_distrib_all_gather(device):
 
-    res = idist.all_gather(10)
+    res = torch.tensor(idist.all_gather(10), device=device)
     true_res = torch.tensor([10,] * idist.get_world_size(), device=device)
     assert (res == true_res).all()
 
@@ -99,17 +137,13 @@ def _test_distrib_all_gather(device):
     true_res = ["abc",] + ["test-test"] * (idist.get_world_size() - 1)
     assert res == true_res
 
-    base_x = "x" * 1026
+    base_x = "tests/ignite/distributed/utils/test_native.py" * 2000
     x = base_x
     if idist.get_rank() == 0:
         x = "abc"
 
-    if idist.get_rank() > 0:
-        with pytest.warns(UserWarning, match=r"is larger than 1024 and thus will be truncated"):
-            res = idist.all_gather(x)
-    else:
-        res = idist.all_gather(x)
-    true_res = ["abc",] + [base_x[:1024]] * (idist.get_world_size() - 1)
+    res = idist.all_gather(x)
+    true_res = ["abc",] + [base_x] * (idist.get_world_size() - 1)
     assert res == true_res
 
     t = torch.arange(100, device=device).reshape(4, 25) * (idist.get_rank() + 1)
@@ -131,46 +165,54 @@ def _test_distrib_broadcast(device):
 
     rank = idist.get_rank()
     ws = idist.get_world_size()
-    for src in range(ws):
 
-        d = 10 if rank == src else 0
-        res = idist.broadcast(d, src=src)
-        true_res = 10
-        assert res == true_res
+    def _test(data_src, data_others, safe_mode):
+        for src in range(ws):
 
-        if rank == src:
-            t = torch.tensor([1.2345, 2.3456], dtype=torch.float, device=device)
-        else:
-            t = torch.empty(2, device=device)
+            data = data_src if rank == src else data_others
+            res = idist.broadcast(data, src=src, safe_mode=safe_mode)
 
-        res = idist.broadcast(t, src=src)
-        true_res = torch.tensor([1.2345, 2.3456], dtype=torch.float, device=device)
-        assert (res == true_res).all(), "{} vs {}".format(res, true_res)
+            if isinstance(res, torch.Tensor):
+                assert (res == data_src).all(), f"{res} vs {data_src}"
+                assert data_src.dtype == res.dtype
+            else:
+                assert res == data_src, f"{res} vs {data_src}"
 
-        if rank == src:
-            t = "test-abcdefg"
-        else:
-            t = ""
+    _test(10, 0, safe_mode=False)
+    _test(10, None, safe_mode=True)
 
-        res = idist.broadcast(t, src=src)
-        true_res = "test-abcdefg"
-        assert res == true_res
+    t = torch.tensor([1.2345, 2.3456], dtype=torch.float, device=device)
+    _test(t, torch.empty_like(t), safe_mode=False)
+    _test(t, None, safe_mode=True)
+    _test(t, "abc", safe_mode=True)
 
-        if rank == src:
-            t = torch.arange(100, device=device).reshape(4, 25) * (src + 1)
-        else:
-            t = torch.empty(4, 25, dtype=torch.long, device=device)
+    _test("test-abcdefg", "", safe_mode=False)
+    _test("test-abcdefg", None, safe_mode=True)
+    _test("test-abcdefg", 1.2, safe_mode=True)
 
-        in_dtype = torch.long
-        res = idist.broadcast(t, src)
-        assert res.shape == (4, 25)
-        assert res.dtype == in_dtype
-        true_res = torch.arange(100, device=device).reshape(4, 25) * (src + 1)
-        assert (res == true_res).all()
+    s = "tests/ignite/distributed/utils/test_horovod.py::test_idist_broadcast_hvd" * 200
+    _test(s, "", safe_mode=False)
+    _test(s, None, safe_mode=True)
+    _test(s, 123.0, safe_mode=True)
+
+    t = torch.arange(100, device=device).reshape(4, 25) * 2
+    _test(t, torch.empty_like(t), safe_mode=False)
+    _test(t, None, safe_mode=True)
+    _test(t, "None", safe_mode=True)
+
+    t = torch.tensor(12)
+    _test(t, torch.empty_like(t), safe_mode=False)
+    _test(t, None, safe_mode=True)
+    _test(t, 123.4, safe_mode=True)
 
     if idist.get_world_size() > 1:
         with pytest.raises(TypeError, match=r"Unhandled input type"):
             idist.broadcast([0, 1, 2], src=0)
+
+    if idist.get_world_size() > 1:
+        msg = "Source data can not be None" if rank == 0 else "Argument safe_mode should be True"
+        with pytest.raises(ValueError, match=msg):
+            idist.broadcast(None, src=0)
 
 
 def _test_distrib_barrier(device):

@@ -1,6 +1,5 @@
 import numbers
 import os
-import sys
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -12,7 +11,7 @@ from sklearn.metrics import confusion_matrix, f1_score, precision_score, recall_
 import ignite.distributed as idist
 from ignite.engine import Engine, Events, State
 from ignite.metrics import ConfusionMatrix, Precision, Recall
-from ignite.metrics.metric import BatchFiltered, BatchWise, EpochWise, Metric, reinit__is_reduced
+from ignite.metrics.metric import BatchFiltered, BatchWise, EpochWise, Metric, reinit__is_reduced, sync_all_reduce
 
 
 class DummyMetric1(Metric):
@@ -28,6 +27,15 @@ class DummyMetric1(Metric):
 
     def update(self, output):
         assert output == self.true_output
+
+
+@pytest.mark.distributed
+@pytest.mark.skipif("WORLD_SIZE" not in os.environ, reason="Skip if WORLD_SIZE not in env vars")
+@pytest.mark.skipif(torch.cuda.is_available(), reason="Skip if GPU")
+def test_metric_warning(distributed_context_single_node_gloo):
+    y = torch.tensor([1.0])
+    with pytest.warns(RuntimeWarning, match=r"DummyMetric1 class does not support distributed setting"):
+        DummyMetric1((y, y))
 
 
 def test_no_transform():
@@ -220,25 +228,23 @@ def test_arithmetics():
     m2.update([1, 10, 100])
     assert m2_mod_2.compute() == 0
 
-    # __div__, only applicable to python2
-    if sys.version_info[0] < 3:
-        m0_div_m1 = m0.__div__(m1)
-        m0.update([1, 10, 100])
-        m1.update([1, 10, 100])
-        assert m0_div_m1.compute() == 0
-        m0.update([2, 20, 200])
-        m1.update([2, 20, 200])
-        assert m0_div_m1.compute() == 0
-
-        m2_div_2 = m2.__div__(2)
-        m2.update([1, 10, 100])
-        assert m2_div_2.compute() == 50
-
-        m2_div_2 = 200 / m2
-        m2.update([1, 10, 100])
-        assert m2_div_2.compute() == 2
-
     # __truediv__
+    m0_truediv_m1 = m0 / m1
+    m0.update([1, 10, 100])
+    m1.update([1, 10, 100])
+    assert m0_truediv_m1.compute() == approx(0.1)
+    m0.update([2, 20, 200])
+    m1.update([2, 20, 200])
+    assert m0_truediv_m1.compute() == approx(0.1)
+
+    m2_truediv_2 = m2 / 2
+    m2.update([1, 10, 100])
+    assert m2_truediv_2.compute() == approx(50.0)
+
+    m2_truediv_2 = 200 / m2
+    m2.update([1, 10, 100])
+    assert m2_truediv_2.compute() == approx(2.0)
+
     m0_truediv_m1 = m0.__truediv__(m1)
     m0.update([1, 10, 100])
     m1.update([1, 10, 100])
@@ -395,9 +401,9 @@ def test_integration():
     recall = state.metrics["recall"].numpy()
     f1 = state.metrics["f1"].numpy()
 
-    assert precision_true == approx(precision), "{} vs {}".format(precision_true, precision)
-    assert recall_true == approx(recall), "{} vs {}".format(recall_true, recall)
-    assert f1_true == approx(f1), "{} vs {}".format(f1_true, f1)
+    assert precision_true == approx(precision), f"{precision_true} vs {precision}"
+    assert recall_true == approx(recall), f"{recall_true} vs {recall}"
+    assert f1_true == approx(f1), f"{f1_true} vs {f1}"
 
 
 def test_abstract_class():
@@ -538,13 +544,60 @@ class DummyMetric2(Metric):
         pass
 
 
+def _test_invalid_sync_all_reduce(device):
+    class InvalidMetric(Metric):
+        @reinit__is_reduced
+        def reset(self):
+            self.a = torch.tensor([0.0, 1.0, 2.0, 3.0], requires_grad=False)
+            self.c = 0.0
+            self.n = 0
+            self.m = -1
+
+        def compute(self):
+            pass
+
+        def update(self):
+            pass
+
+        @sync_all_reduce("a:sum")
+        def invalid_reduction_op_1(self):
+            pass
+
+        @sync_all_reduce("c:MaX")
+        def invalid_reduction_op_2(self):
+            pass
+
+        @sync_all_reduce("n:MINN")
+        def invalid_reduction_op_3(self):
+            pass
+
+        @sync_all_reduce("m:PROduCT")
+        def invalid_reduction_op_4(self):
+            pass
+
+    metric_device = device if torch.device(device).type != "xla" else "cpu"
+    m = InvalidMetric(device=metric_device)
+    m.reset()
+
+    if idist.get_world_size() > 1:
+        with pytest.raises(ValueError, match=r"Reduction operation is not valid"):
+            m.invalid_reduction_op_1()
+
+        with pytest.raises(ValueError, match=r"Reduction operation is not valid"):
+            m.invalid_reduction_op_2()
+
+        with pytest.raises(ValueError, match=r"Reduction operation is not valid"):
+            m.invalid_reduction_op_3()
+
+        with pytest.raises(ValueError, match=r"Reduction operation is not valid"):
+            m.invalid_reduction_op_4()
+
+
 def _test_distrib_sync_all_reduce_decorator(device):
-
-    from ignite.metrics.metric import sync_all_reduce, reinit__is_reduced
-
     class DummyMetric(Metric):
         @reinit__is_reduced
         def reset(self):
+            # SUM op
             self.a = torch.tensor([0.0, 1.0, 2.0, 3.0], device=self._device, requires_grad=False)
             self.a_nocomp = self.a.clone().to("cpu")
             self.b = torch.tensor(1.0, dtype=torch.float64, device=self._device, requires_grad=False)
@@ -554,19 +607,50 @@ def _test_distrib_sync_all_reduce_decorator(device):
             self.n = 0
             self.n_nocomp = self.n
 
-        @sync_all_reduce("a", "b", "c", "n")
+            # MAX op
+            self.m = -1
+
+            # MIN op
+            self.k = 10000
+
+            # initialize number of updates to test (MAX, MIN) ops
+            self.num_updates = 0
+
+            # PRODUCT op
+            self.prod = torch.tensor([2.0, 3.0], device=self._device, requires_grad=False)
+            self.prod_nocomp = self.prod.clone().to("cpu")
+
+        @sync_all_reduce("a", "b", "c", "n:SUM", "m:MAX", "k:MIN", "prod:PRODUCT")
         def compute(self):
             assert (self.a.cpu() == (self.a_nocomp + 10) * idist.get_world_size()).all()
             assert (self.b.cpu() == (self.b_nocomp - 5) * idist.get_world_size()).all()
             assert self.c == pytest.approx((self.c_nocomp + 1.23456) * idist.get_world_size())
             assert self.n == (self.n_nocomp + 1) * idist.get_world_size()
+            assert self.m == self.num_updates * (idist.get_world_size() - 1) - 1
+            assert self.k == 10000 - self.num_updates * (idist.get_world_size() - 1)
+            temp_prod_nocomp = 5 * self.prod_nocomp  # new variable for the recomputing
+            temp_prod_nocomp = temp_prod_nocomp.pow(idist.get_world_size())
+            assert (self.prod.cpu() == temp_prod_nocomp).all()
 
         @reinit__is_reduced
         def update(self, output):
+            # SUM op
             self.n += 1
             self.c += 1.23456
             self.a += 10.0
             self.b -= 5.0
+
+            # MAX op
+            self.m += idist.get_rank()
+
+            # MIN op
+            self.k -= idist.get_rank()
+
+            # numper of updates for (MAX, MIN) ops
+            self.num_updates += 1
+
+            # PRODUCT op
+            self.prod *= 5
 
     metric_device = device if torch.device(device).type != "xla" else "cpu"
     m = DummyMetric(device=metric_device)
@@ -584,18 +668,20 @@ def _test_creating_on_xla_fails(device):
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif(torch.cuda.device_count() < 1, reason="Skip if no GPU")
-def test_distrib_gpu(distributed_context_single_node_nccl):
+def test_distrib_nccl_gpu(distributed_context_single_node_nccl):
 
-    device = "cuda:{}".format(distributed_context_single_node_nccl["local_rank"])
+    device = idist.device()
     _test_distrib_sync_all_reduce_decorator(device)
+    _test_invalid_sync_all_reduce(device)
 
 
 @pytest.mark.distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
-def test_distrib_cpu(distributed_context_single_node_gloo):
+def test_distrib_gloo_cpu_or_gpu(distributed_context_single_node_gloo):
 
-    device = "cpu"
+    device = idist.device()
     _test_distrib_sync_all_reduce_decorator(device)
+    _test_invalid_sync_all_reduce(device)
 
 
 @pytest.mark.distributed
@@ -607,22 +693,27 @@ def test_distrib_hvd(gloo_hvd_executor):
     nproc = 4 if not torch.cuda.is_available() else torch.cuda.device_count()
 
     gloo_hvd_executor(_test_distrib_sync_all_reduce_decorator, (device,), np=nproc, do_init=True)
+    gloo_hvd_executor(_test_invalid_sync_all_reduce, (device,), np=nproc, do_init=True)
 
 
 @pytest.mark.multinode_distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif("MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
-def test_multinode_distrib_cpu(distributed_context_multi_node_gloo):
-    device = "cpu"
+def test_multinode_distrib_gloo_cpu_or_gpu(distributed_context_multi_node_gloo):
+
+    device = idist.device()
     _test_distrib_sync_all_reduce_decorator(device)
+    _test_invalid_sync_all_reduce(device)
 
 
 @pytest.mark.multinode_distributed
 @pytest.mark.skipif(not idist.has_native_dist_support, reason="Skip if no native dist support")
 @pytest.mark.skipif("GPU_MULTINODE_DISTRIB" not in os.environ, reason="Skip if not multi-node distributed")
-def test_multinode_distrib_gpu(distributed_context_multi_node_nccl):
-    device = "cuda:{}".format(distributed_context_multi_node_nccl["local_rank"])
+def test_multinode_distrib_nccl_gpu(distributed_context_multi_node_nccl):
+
+    device = idist.device()
     _test_distrib_sync_all_reduce_decorator(device)
+    _test_invalid_sync_all_reduce(device)
 
 
 @pytest.mark.tpu
@@ -632,12 +723,14 @@ def test_distrib_single_device_xla():
     device = idist.device()
     _test_distrib_sync_all_reduce_decorator(device)
     _test_creating_on_xla_fails(device)
+    _test_invalid_sync_all_reduce(device)
 
 
 def _test_distrib_xla_nprocs(index):
     device = idist.device()
     _test_distrib_sync_all_reduce_decorator(device)
     _test_creating_on_xla_fails(device)
+    _test_invalid_sync_all_reduce(device)
 
 
 @pytest.mark.tpu
@@ -672,7 +765,10 @@ def test_completed():
     engine = MagicMock(state=State(metrics={}))
     metrics = {"foo": 1, "bar": torch.tensor(2.0), "baz": {"qux": "quux"}}
     m.compute = MagicMock(return_value=metrics)
+    with pytest.raises(ValueError, match=r"Argument name 'foo' is conflicting with mapping keys"):
+        m.completed(engine, "foo")
     m.completed(engine, "metric")
+    metrics["metric"] = metrics
     assert engine.state.metrics == metrics
 
     # other

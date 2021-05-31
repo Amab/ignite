@@ -1,4 +1,5 @@
 import warnings
+from typing import Any, Callable, Iterator, List, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -16,7 +17,7 @@ from ignite.utils import setup_logger
 __all__ = ["auto_dataloader", "auto_model", "auto_optim", "DistributedProxySampler"]
 
 
-def auto_dataloader(dataset, **kwargs):
+def auto_dataloader(dataset: Dataset, **kwargs: Any) -> Union[DataLoader, "_MpDeviceLoader"]:
     """Helper method to create a dataloader adapted for non-distributed and distributed configurations (supporting
     all available backends from :meth:`~ignite.distributed.utils.available_backends()`).
 
@@ -49,8 +50,8 @@ def auto_dataloader(dataset, **kwargs):
         )
 
     Args:
-        dataset (Dataset): input torch dataset
-        **kwargs: keyword arguments for `torch DataLoader`_.
+        dataset: input torch dataset
+        kwargs: keyword arguments for `torch DataLoader`_.
 
     Returns:
         `torch DataLoader`_ or `XLA MpDeviceLoader`_ for XLA devices
@@ -74,7 +75,9 @@ def auto_dataloader(dataset, **kwargs):
 
         if "batch_sampler" not in kwargs:
             if kwargs.get("sampler", None) is not None:
-                sampler = DistributedProxySampler(kwargs["sampler"], num_replicas=world_size, rank=rank)
+                sampler = DistributedProxySampler(
+                    kwargs["sampler"], num_replicas=world_size, rank=rank
+                )  # type: Union[DistributedProxySampler, DistributedSampler, Sampler]
             else:
                 sampler = DistributedSampler(
                     dataset, num_replicas=world_size, rank=rank, shuffle=kwargs.get("shuffle", True)
@@ -100,7 +103,7 @@ def auto_dataloader(dataset, **kwargs):
     else:
         kwargs["pin_memory"] = kwargs.get("pin_memory", "cuda" in idist.device().type)
 
-    logger.info("Use data loader kwargs for dataset '{}': \n\t{}".format(repr(dataset)[:20].strip(), kwargs))
+    logger.info(f"Use data loader kwargs for dataset '{repr(dataset)[:20].strip()}': \n\t{kwargs}")
     dataloader = DataLoader(dataset, **kwargs)
 
     if idist.has_xla_support and idist.backend() == idist_xla.XLA_TPU and world_size > 1:
@@ -115,14 +118,14 @@ def auto_dataloader(dataset, **kwargs):
         except ImportError:
             pass
 
-        sampler = dataloader.sampler
-        dataloader = mp_device_loader_cls(dataloader, idist.device())
-        dataloader.sampler = sampler
+        mp_dataloader = mp_device_loader_cls(dataloader, idist.device())
+        mp_dataloader.sampler = dataloader.sampler  # type: ignore[attr-defined]
+        return mp_dataloader
 
     return dataloader
 
 
-def auto_model(model: nn.Module, sync_bn: bool = False) -> nn.Module:
+def auto_model(model: nn.Module, sync_bn: bool = False, **kwargs: Any) -> nn.Module:
     """Helper method to adapt provided model for non-distributed and distributed configurations (supporting
     all available backends from :meth:`~ignite.distributed.utils.available_backends()`).
 
@@ -151,10 +154,12 @@ def auto_model(model: nn.Module, sync_bn: bool = False) -> nn.Module:
         model = idist.auto_model(model)
 
     Args:
-        model (torch.nn.Module): model to adapt.
-        sync_bn (bool): if True, applies `torch convert_sync_batchnorm`_ to the model for native torch
+        model: model to adapt.
+        sync_bn: if True, applies `torch convert_sync_batchnorm`_ to the model for native torch
             distributed only. Default, False. Note, if using Nvidia/Apex, batchnorm conversion should be
             applied before calling ``amp.initialize``.
+        kwargs: kwargs to model's wrapping class: `torch DistributedDataParallel`_ or `torch DataParallel`_
+            if applicable. Please, make sure to use acceptable kwargs for given backend.
 
     Returns:
         torch.nn.Module
@@ -165,6 +170,13 @@ def auto_model(model: nn.Module, sync_bn: bool = False) -> nn.Module:
     .. _torch convert_sync_batchnorm: https://pytorch.org/docs/stable/generated/torch.nn.SyncBatchNorm.html#
         torch.nn.SyncBatchNorm.convert_sync_batchnorm
 
+    .. versionchanged:: 0.4.2
+
+        - Added Horovod distributed framework.
+        - Added ``sync_bn`` argument.
+
+    .. versionchanged:: 0.4.3
+        Added kwargs to ``idist.auto_model``.
     """
     logger = setup_logger(__name__ + ".auto_model")
 
@@ -176,21 +188,24 @@ def auto_model(model: nn.Module, sync_bn: bool = False) -> nn.Module:
     # distributed data parallel model
     if idist.get_world_size() > 1:
         bnd = idist.backend()
-        if idist.has_native_dist_support and bnd == idist_native.NCCL:
+        if idist.has_native_dist_support and bnd in (idist_native.NCCL, idist_native.GLOO, idist_native.MPI):
             if sync_bn:
                 logger.info("Convert batch norm to sync batch norm")
                 model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
-            lrank = idist.get_local_rank()
-            logger.info("Apply torch DistributedDataParallel on model, device id: {}".format(lrank))
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[lrank,])
-        elif idist.has_native_dist_support and bnd == idist_native.GLOO:
-            if sync_bn:
-                logger.info("Convert batch norm to sync batch norm")
-                model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+            if torch.cuda.is_available():
+                if "device_ids" in kwargs:
+                    raise ValueError(f"Argument kwargs should not contain 'device_ids', but got {kwargs}")
 
-            logger.info("Apply torch DistributedDataParallel on model")
-            model = torch.nn.parallel.DistributedDataParallel(model)
+                lrank = idist.get_local_rank()
+                logger.info(f"Apply torch DistributedDataParallel on model, device id: {lrank}")
+                kwargs["device_ids"] = [
+                    lrank,
+                ]
+            else:
+                logger.info("Apply torch DistributedDataParallel on model")
+
+            model = torch.nn.parallel.DistributedDataParallel(model, **kwargs)
         elif idist.has_hvd_support and bnd == idist_hvd.HOROVOD:
             import horovod.torch as hvd
 
@@ -200,7 +215,7 @@ def auto_model(model: nn.Module, sync_bn: bool = False) -> nn.Module:
     # not distributed but multiple GPUs reachable so data parallel model
     elif torch.cuda.device_count() > 1 and "cuda" in idist.device().type:
         logger.info("Apply torch DataParallel on model")
-        model = torch.nn.parallel.DataParallel(model)
+        model = torch.nn.parallel.DataParallel(model, **kwargs)
 
     return model
 
@@ -225,15 +240,16 @@ def auto_optim(optimizer: Optimizer) -> Optimizer:
 
         optimizer = idist.auto_optim(optimizer)
 
-
     Args:
-        optimizer (Optimizer): input torch optimizer
+        optimizer: input torch optimizer
 
     Returns:
         Optimizer
 
     .. _xm.optimizer_step: http://pytorch.org/xla/release/1.5/index.html#torch_xla.core.xla_model.optimizer_step
 
+    .. versionchanged:: 0.4.2
+        Added Horovod distributed optimizer.
     """
     bnd = idist.backend()
     if idist.has_xla_support and bnd == idist_xla.XLA_TPU:
@@ -260,28 +276,30 @@ class DistributedProxySampler(DistributedSampler):
         Input sampler is assumed to have a constant size.
 
     Args:
-        sampler (Sampler): Input torch data sampler.
-        num_replicas (int, optional): Number of processes participating in distributed training.
-        rank (int, optional): Rank of the current process within ``num_replicas``.
+        sampler: Input torch data sampler.
+        num_replicas: Number of processes participating in distributed training.
+        rank: Rank of the current process within ``num_replicas``.
 
     """
 
-    def __init__(self, sampler: Sampler, num_replicas=None, rank=None):
+    def __init__(self, sampler: Sampler, num_replicas: Optional[int] = None, rank: Optional[int] = None) -> None:
 
         if not isinstance(sampler, Sampler):
-            raise TypeError("Argument sampler should be instance of torch Sampler, but given: {}".format(type(sampler)))
+            raise TypeError(f"Argument sampler should be instance of torch Sampler, but given: {type(sampler)}")
 
         if not hasattr(sampler, "__len__"):
             raise TypeError("Argument sampler should have length")
 
-        super(DistributedProxySampler, self).__init__(sampler, num_replicas=num_replicas, rank=rank, shuffle=False)
+        super(DistributedProxySampler, self).__init__(
+            sampler, num_replicas=num_replicas, rank=rank, shuffle=False  # type: ignore[arg-type]
+        )
         self.sampler = sampler
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator:
         # deterministically shuffle based on epoch
         torch.manual_seed(self.epoch)
 
-        indices = []
+        indices = []  # type: List
         while len(indices) < self.total_size:
             indices += list(self.sampler)
 
@@ -291,7 +309,7 @@ class DistributedProxySampler(DistributedSampler):
         # subsample
         indices = indices[self.rank : self.total_size : self.num_replicas]
         if len(indices) != self.num_samples:
-            raise RuntimeError("{} vs {}".format(len(indices), self.num_samples))
+            raise RuntimeError(f"{len(indices)} vs {self.num_samples}")
 
         return iter(indices)
 
@@ -304,22 +322,22 @@ if idist.has_xla_support:
     class _MpDeviceLoader:
         # https://github.com/pytorch/xla/pull/2117
         # From pytorch/xla if `torch_xla.distributed.parallel_loader.MpDeviceLoader` is not available
-        def __init__(self, loader, device, **kwargs):
+        def __init__(self, loader: Any, device: torch.device, **kwargs: Any) -> None:
             self._loader = loader
             self._device = device
             self._parallel_loader_kwargs = kwargs
 
-        def __iter__(self):
+        def __iter__(self) -> Iterator:
             parallel_loader = ParallelLoader(self._loader, [self._device], **self._parallel_loader_kwargs)
             return parallel_loader.per_device_loader(self._device)
 
-        def __len__(self):
+        def __len__(self) -> int:
             return len(self._loader)
 
     class _XLADistributedOptimizer(Optimizer):
-        def __init__(self, optimizer):
-            super(self.__class__, self).__init__(optimizer.param_groups)
+        def __init__(self, optimizer: Optimizer) -> None:
+            super(self.__class__, self).__init__(optimizer.param_groups)  # type: ignore[call-arg]
             self.wrapped_optimizer = optimizer
 
-        def step(self, closure=None):
+        def step(self, closure: Optional[Callable] = None) -> None:
             xm.optimizer_step(self.wrapped_optimizer, barrier=True)

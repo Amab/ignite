@@ -4,7 +4,12 @@ from unittest.mock import MagicMock, call
 import pytest
 import torch
 
-from ignite.contrib.handlers.polyaxon_logger import *
+from ignite.contrib.handlers.polyaxon_logger import (
+    OptimizerParamsHandler,
+    OutputHandler,
+    PolyaxonLogger,
+    global_step_from_engine,
+)
 from ignite.engine import Engine, Events, State
 
 os.environ["POLYAXON_NO_OP"] = "1"
@@ -244,11 +249,12 @@ def test_integration():
 
     def dummy_handler(engine, logger, event_name):
         global_step = engine.state.get_event_attrib_value(event_name)
-        logger.log_metrics(step=global_step, **{"{}".format("test_value"): global_step})
+        logger.log_metrics(step=global_step, **{"test_value": global_step})
 
     plx_logger.attach(trainer, log_handler=dummy_handler, event_name=Events.EPOCH_COMPLETED)
 
     trainer.run(data, max_epochs=n_epochs)
+    plx_logger.close()
 
 
 def test_integration_as_context_manager():
@@ -268,7 +274,7 @@ def test_integration_as_context_manager():
 
         def dummy_handler(engine, logger, event_name):
             global_step = engine.state.get_event_attrib_value(event_name)
-            logger.log_metrics(step=global_step, **{"{}".format("test_value"): global_step})
+            logger.log_metrics(step=global_step, **{"test_value": global_step})
 
         plx_logger.attach(trainer, log_handler=dummy_handler, event_name=Events.EPOCH_COMPLETED)
 
@@ -296,5 +302,7 @@ def no_site_packages():
 
 def test_no_polyaxon_client(no_site_packages):
 
-    with pytest.raises(RuntimeError, match=r"This contrib module requires polyaxon-client to be installed"):
+    with pytest.raises(
+        RuntimeError, match=r"This contrib module requires polyaxon",
+    ):
         PolyaxonLogger()

@@ -9,6 +9,9 @@ value is then computed using the output of the engine's ``process_function``:
 
 .. code-block:: python
 
+    from ignite.engine import Engine
+    from ignite.metrics import Accuracy
+
     def process_function(engine, batch):
         # ...
         return y_pred, y
@@ -16,11 +19,18 @@ value is then computed using the output of the engine's ``process_function``:
     engine = Engine(process_function)
     metric = Accuracy()
     metric.attach(engine, "accuracy")
+    # ...
+    state = engine.run(data)
+    print(f"Accuracy: {state.metrics['accuracy']}")
+
 
 If the engine's output is not in the format ``(y_pred, y)`` or ``{'y_pred': y_pred, 'y': y, ...}``, the user can
 use the ``output_transform`` argument to transform it:
 
 .. code-block:: python
+
+    from ignite.engine import Engine
+    from ignite.metrics import Accuracy
 
     def process_function(engine, batch):
         # ...
@@ -36,18 +46,21 @@ use the ``output_transform`` argument to transform it:
 
     metric = Accuracy(output_transform=output_transform)
     metric.attach(engine, "accuracy")
+    # ...
+    state = engine.run(data)
+    print(f"Accuracy: {state.metrics['accuracy']}")
 
 
 .. warning::
 
     Please, be careful when using ``lambda`` functions to setup multiple ``output_transform`` for multiple metrics
-    
+
     .. code-block:: python
 
         # Wrong
         # metrics_group = [Accuracy(output_transform=lambda output: output[name]) for name in names]
         # As lambda can not store `name` and all `output_transform` will use the last `name`
-        
+
         # A correct way. For example, using functools.partial
         from functools import partial
 
@@ -55,7 +68,7 @@ use the ``output_transform`` argument to transform it:
             return output[name]
 
         metrics_group = [Accuracy(output_transform=partial(ot_func, name=name)) for name in names]
-    
+
     For more details, see `here <https://discuss.pytorch.org/t/evaluate-multiple-models-with-one-evaluator-results-weird-metrics/96695>`_
 
 .. Note ::
@@ -66,7 +79,7 @@ use the ``output_transform`` argument to transform it:
 
     .. code-block:: python
 
-        device = "cuda:{}".format(local_rank)
+        device = f"cuda:{local_rank}"
         model = torch.nn.parallel.DistributedDataParallel(model,
                                                           device_ids=[local_rank, ],
                                                           output_device=local_rank)
@@ -86,6 +99,45 @@ use the ``output_transform`` argument to transform it:
    Metrics cannot be serialized using `pickle` module because the implementation is based on lambda functions.
    Therefore, use the third party library `dill` to overcome the limitation of `pickle`.
 
+
+Reset, Update, Compute API
+--------------------------
+
+User can also call directly the following methods on the metric:
+
+- :meth:`~ignite.metrics.metric.Metric.reset()` : resets internal variables and accumulators
+- :meth:`~ignite.metrics.metric.Metric.update()` : updates internal variables and accumulators with provided batch output ``(y_pred, y)``
+- :meth:`~ignite.metrics.metric.Metric.compute()` : computes custom metric and return the result
+
+This API gives a more fine-grained/custom usage on how to compute a metric. For example:
+
+.. code-block:: python
+
+    from ignite.metrics import Precision
+
+    # Define the metric
+    precision = Precision()
+
+    # Start accumulation:
+    for x, y in data:
+        y_pred = model(x)
+        precision.update((y_pred, y))
+
+    # Compute the result
+    print("Precision: ", precision.compute())
+
+    # Reset metric
+    precision.reset()
+
+    # Start new accumulation:
+    for x, y in data:
+        y_pred = model(x)
+        precision.update((y_pred, y))
+
+    # Compute new result
+    print("Precision: ", precision.compute())
+
+
 Metric arithmetics
 ------------------
 
@@ -96,6 +148,8 @@ or use a lambda function, such as ``MetricsLambda(lambda a, b: torch.mean(a + b)
 For example:
 
 .. code-block:: python
+
+    from ignite.metrics import Precision, Recall
 
     precision = Precision(average=False)
     recall = Recall(average=False)
@@ -110,6 +164,8 @@ Metrics also support indexing operation (if metric's result is a vector/matrix/t
 
 .. code-block:: python
 
+    from ignite.metrics import ConfusionMatrix
+
     cm = ConfusionMatrix(num_classes=10)
     iou_metric = IoU(cm)
     iou_no_bg_metric = iou_metric[:9]  # We assume that the background index is 9
@@ -119,12 +175,12 @@ Metrics also support indexing operation (if metric's result is a vector/matrix/t
 How to create a custom metric
 -----------------------------
 
-To create a custom metric one needs to create a new class inheriting from :class:`~ignite.metrics.Metric` and override
+To create a custom metric one needs to create a new class inheriting from :class:`~ignite.metrics.metric.Metric` and override
 three methods :
 
-- :meth:`~ignite.metrics.Metric.reset()` : resets internal variables and accumulators
-- :meth:`~ignite.metrics.Metric.update()` : updates internal variables and accumulators with provided batch output ``(y_pred, y)``
-- :meth:`~ignite.metrics.Metric.compute()` : computes custom metric and return the result
+- :meth:`~ignite.metrics.metric.Metric.reset()` : resets internal variables and accumulators
+- :meth:`~ignite.metrics.metric.Metric.update()` : updates internal variables and accumulators with provided batch output ``(y_pred, y)``
+- :meth:`~ignite.metrics.metric.Metric.compute()` : computes custom metric and return the result
 
 For example, we would like to implement for illustration purposes a multi-class accuracy metric with some
 specific condition (e.g. ignore user-defined classes):
@@ -167,14 +223,14 @@ specific condition (e.g. ignore user-defined classes):
             self._num_correct += torch.sum(correct).to(self._device)
             self._num_examples += correct.shape[0]
 
-        @sync_all_reduce("_num_examples", "_num_correct")
+        @sync_all_reduce("_num_examples", "_num_correct:SUM")
         def compute(self):
             if self._num_examples == 0:
                 raise NotComputableError('CustomAccuracy must have at least one example before it can be computed.')
             return self._num_correct.item() / self._num_examples
 
 
-We imported necessary classes as :class:`~ignite.metrics.Metric`, :class:`~ignite.exceptions.NotComputableError` and
+We imported necessary classes as :class:`~ignite.metrics.metric.Metric`, :class:`~ignite.exceptions.NotComputableError` and
 decorators to adapt the metric for distributed setting. In ``reset`` method, we reset internal variables ``_num_correct``
 and ``_num_examples`` which are used to compute the custom metric. In ``updated`` method we define how to update
 the internal variables. And finally in ``compute`` method, we compute metric value.
@@ -212,114 +268,98 @@ Metrics and its usages
 
 By default, `Metrics` are epoch-wise, it means
 
-- :meth:`~ignite.metrics.Metric.reset()` is triggered every ``EPOCH_STARTED`` (See :class:`~ignite.engine.events.Events`).
-- :meth:`~ignite.metrics.Metric.update()` is triggered every ``ITERATION_COMPLETED``.
-- :meth:`~ignite.metrics.Metric.compute()` is triggered every ``EPOCH_COMPLETED``.
+- :meth:`~ignite.metrics.metric.Metric.reset()` is triggered every ``EPOCH_STARTED`` (See :class:`~ignite.engine.events.Events`).
+- :meth:`~ignite.metrics.metric.Metric.update()` is triggered every ``ITERATION_COMPLETED``.
+- :meth:`~ignite.metrics.metric.Metric.compute()` is triggered every ``EPOCH_COMPLETED``.
 
-Usages can be user defined by creating a class inheriting for :class:`~ignite.metrics.MetricUsage`. See the list below of usages.
+Usages can be user defined by creating a class inheriting for :class:`~ignite.metrics.metric.MetricUsage`. See the list below of usages.
 
 Complete list of usages
-```````````````````````
+~~~~~~~~~~~~~~~~~~~~~~~
 
-    - :class:`~ignite.metrics.MetricUsage`
-    - :class:`~ignite.metrics.EpochWise`
-    - :class:`~ignite.metrics.BatchWise`
-    - :class:`~ignite.metrics.BatchFiltered`
+    - :class:`~ignite.metrics.metric.MetricUsage`
+    - :class:`~ignite.metrics.metric.EpochWise`
+    - :class:`~ignite.metrics.metric.BatchWise`
+    - :class:`~ignite.metrics.metric.BatchFiltered`
 
 Metrics and distributed computations
 ------------------------------------
 
-In the above example, ``CustomAccuracy`` has ``reset``, ``update``, ``compute`` methods
-decorated with ``reinit__is_reduced``, ``sync_all_reduce``. The purpose of these features is to adapt metrics in distributed
-computations on supported backend and devices (:doc:`distributed`). More precisely, in the above example we
-added ``@sync_all_reduce("_num_examples", "_num_correct")`` over ``compute`` method. This means that when ``compute`` method
-is called, metric's interal variables ``self._num_examples`` and ``self._num_correct`` are summed up over all participating
-devices. Therefore, once collected, these internal variables can be used to compute the final metric value.
+In the above example, ``CustomAccuracy`` has ``reset``, ``update``, ``compute`` methods decorated
+with :meth:`~ignite.metrics.metric.reinit__is_reduced`, :meth:`~ignite.metrics.metric.sync_all_reduce`. The purpose of these features is to adapt metrics in distributed
+computations on supported backend and devices (see :doc:`distributed` for more details). More precisely, in the above
+example we added ``@sync_all_reduce("_num_examples", "_num_correct:SUM")`` over ``compute`` method. This means that when ``compute``
+method is called, metric's interal variables ``self._num_examples`` and ``self._num_correct:SUM`` are summed up over all participating
+devices. We specify the reduction operation ``self._num_correct:SUM`` or we keep the default ``self._num_examples`` as the default is ``SUM``.
+We currently support four reduction operations (SUM, MAX, MIN, PRODUCT).
+Therefore, once collected, these internal variables can be used to compute the final metric value.
 
 Complete list of metrics
 ------------------------
 
-    - :class:`~ignite.metrics.Accuracy`
-    - :class:`~ignite.metrics.Average`
-    - :class:`~ignite.metrics.ConfusionMatrix`
-    - :meth:`~ignite.metrics.DiceCoefficient`
-    - :class:`~ignite.metrics.EpochMetric`
-    - :meth:`~ignite.metrics.Fbeta`
-    - :class:`~ignite.metrics.GeometricAverage`
-    - :meth:`~ignite.metrics.IoU`
-    - :meth:`~ignite.metrics.mIoU`
-    - :class:`~ignite.metrics.Loss`
-    - :class:`~ignite.metrics.MeanAbsoluteError`
-    - :class:`~ignite.metrics.MeanPairwiseDistance`
-    - :class:`~ignite.metrics.MeanSquaredError`
-    - :class:`~ignite.metrics.Metric`
-    - :class:`~ignite.metrics.MetricsLambda`
-    - :class:`~ignite.metrics.Precision`
-    - :class:`~ignite.metrics.Recall`
-    - :class:`~ignite.metrics.RootMeanSquaredError`
-    - :class:`~ignite.metrics.RunningAverage`
-    - :class:`~ignite.metrics.SSIM`
-    - :class:`~ignite.metrics.TopKCategoricalAccuracy`
-    - :class:`~ignite.metrics.VariableAccumulation`
-
 .. currentmodule:: ignite.metrics
 
-.. autoclass:: Accuracy
+.. autosummary::
+    :nosignatures:
+    :toctree: generated
 
-.. autoclass:: Average
+    Average
+    GeometricAverage
+    VariableAccumulation
+    Accuracy
+    confusion_matrix.ConfusionMatrix
+    ClassificationReport
+    DiceCoefficient
+    JaccardIndex
+    IoU
+    mIoU
+    EpochMetric
+    Fbeta
+    Frequency
+    Loss
+    MeanAbsoluteError
+    MeanPairwiseDistance
+    MeanSquaredError
+    metric.Metric
+    metrics_lambda.MetricsLambda
+    MultiLabelConfusionMatrix
+    precision.Precision
+    PSNR
+    recall.Recall
+    RootMeanSquaredError
+    RunningAverage
+    SSIM
+    TopKCategoricalAccuracy
+    Bleu
+    Rouge
+    RougeL
+    RougeN
 
-.. autoclass:: ConfusionMatrix
+Helpers for customizing metrics
+-------------------------------
 
-.. autofunction:: DiceCoefficient
+MetricUsage
+~~~~~~~~~~~
+.. autoclass:: ignite.metrics.metric.MetricUsage
 
-.. autoclass:: EpochMetric
+EpochWise
+~~~~~~~~~
+.. autoclass:: ignite.metrics.metric.EpochWise
 
-.. autofunction:: Fbeta
+BatchWise
+~~~~~~~~~
+.. autoclass:: ignite.metrics.metric.BatchWise
 
-.. autoclass:: GeometricAverage
-
-.. autofunction:: IoU
-
-.. autofunction:: mIoU
-
-.. autoclass:: Loss
-
-.. autoclass:: MeanAbsoluteError
-
-.. autoclass:: MeanPairwiseDistance
-
-.. autoclass:: MeanSquaredError
-
-.. autoclass:: Metric
-    :members:
-
-.. autoclass:: MetricsLambda
-
-.. autoclass:: Precision
-
-.. autoclass:: Recall
-
-.. autoclass:: RootMeanSquaredError
-
-.. autoclass:: RunningAverage
-
-.. autoclass:: SSIM
-
-.. autoclass:: TopKCategoricalAccuracy
-
-.. autoclass:: VariableAccumulation
-
-.. autoclass:: MetricUsage
-
-.. autoclass:: EpochWise
-
-.. autoclass:: BatchWise
-
-.. autoclass:: BatchFiltered
-
+BatchFiltered
+~~~~~~~~~~~~~
+.. autoclass:: ignite.metrics.metric.BatchFiltered
 
 .. currentmodule:: ignite.metrics.metric
 
-.. autofunction:: sync_all_reduce
-
+reinit__is_reduced
+~~~~~~~~~~~~~~~~~~
 .. autofunction:: reinit__is_reduced
+
+sync_all_reduce
+~~~~~~~~~~~~~~~
+.. autofunction:: sync_all_reduce

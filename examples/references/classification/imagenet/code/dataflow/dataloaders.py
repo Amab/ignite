@@ -1,8 +1,7 @@
 from typing import Callable, Optional, Tuple
 
-import numpy as np
 import cv2
-
+import numpy as np
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Subset
 from torchvision.datasets import ImageNet
@@ -12,7 +11,7 @@ import ignite.distributed as idist
 
 def opencv_loader(path):
     img = cv2.imread(path)
-    assert img is not None, "Image at '{}' has a problem".format(path)
+    assert img is not None, f"Image at '{path}' has a problem"
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 

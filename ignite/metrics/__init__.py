@@ -1,6 +1,7 @@
 from ignite.metrics.accumulation import Average, GeometricAverage, VariableAccumulation
 from ignite.metrics.accuracy import Accuracy
-from ignite.metrics.confusion_matrix import ConfusionMatrix, DiceCoefficient, IoU, mIoU
+from ignite.metrics.classification_report import ClassificationReport
+from ignite.metrics.confusion_matrix import ConfusionMatrix, DiceCoefficient, IoU, JaccardIndex, mIoU
 from ignite.metrics.epoch_metric import EpochMetric
 from ignite.metrics.fbeta import Fbeta
 from ignite.metrics.frequency import Frequency
@@ -10,7 +11,11 @@ from ignite.metrics.mean_pairwise_distance import MeanPairwiseDistance
 from ignite.metrics.mean_squared_error import MeanSquaredError
 from ignite.metrics.metric import BatchFiltered, BatchWise, EpochWise, Metric, MetricUsage
 from ignite.metrics.metrics_lambda import MetricsLambda
+from ignite.metrics.multilabel_confusion_matrix import MultiLabelConfusionMatrix
+from ignite.metrics.nlp.bleu import Bleu
+from ignite.metrics.nlp.rouge import Rouge, RougeL, RougeN
 from ignite.metrics.precision import Precision
+from ignite.metrics.psnr import PSNR
 from ignite.metrics.recall import Recall
 from ignite.metrics.root_mean_squared_error import RootMeanSquaredError
 from ignite.metrics.running_average import RunningAverage
@@ -26,6 +31,7 @@ __all__ = [
     "MeanPairwiseDistance",
     "MeanSquaredError",
     "ConfusionMatrix",
+    "ClassificationReport",
     "TopKCategoricalAccuracy",
     "Average",
     "DiceCoefficient",
@@ -34,11 +40,18 @@ __all__ = [
     "GeometricAverage",
     "IoU",
     "mIoU",
+    "JaccardIndex",
+    "MultiLabelConfusionMatrix",
     "Precision",
+    "PSNR",
     "Recall",
     "RootMeanSquaredError",
     "RunningAverage",
     "VariableAccumulation",
     "Frequency",
     "SSIM",
+    "Bleu",
+    "Rouge",
+    "RougeN",
+    "RougeL",
 ]

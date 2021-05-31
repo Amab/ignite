@@ -1,7 +1,6 @@
 import socket
 from functools import wraps
-from numbers import Number
-from typing import Callable, List, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, List, Mapping, Optional, Tuple, Union
 
 import torch
 
@@ -48,12 +47,12 @@ _model = _SerialModel()
 _need_to_sync = True
 
 
-def sync(temporary=False):
+def sync(temporary: bool = False) -> None:
     """Helper method to force this module to synchronize with current distributed context.
     This method should be used when distributed context is manually created or destroyed.
 
     Args:
-        temporary (bool): If True, distributed model synchronization is done every call of ``idist.get_*`` methods.
+        temporary: If True, distributed model synchronization is done every call of ``idist.get_*`` methods.
             This may have a negative performance impact.
     """
     global _model
@@ -78,6 +77,9 @@ def device() -> torch.device:
 
     Returns:
         torch.device
+
+    .. versionchanged:: 0.4.2
+        Added Horovod distributed framework.
     """
     if _need_to_sync and isinstance(_model, _SerialModel):
         sync(temporary=True)
@@ -95,6 +97,9 @@ def backend() -> Optional[str]:
 
     Returns:
         str or None
+
+    .. versionchanged:: 0.4.2
+        Added Horovod distributed framework.
     """
     if _need_to_sync and isinstance(_model, _SerialModel):
         sync(temporary=True)
@@ -102,10 +107,9 @@ def backend() -> Optional[str]:
     return _model.backend()
 
 
-def available_backends() -> Tuple[str]:
-    """Returns available backends.
-    """
-    out = ()
+def available_backends() -> Tuple[str, ...]:
+    """Returns available backends."""
+    out = ()  # type: Tuple[str, ...]
     for m in registered_computation_models:
         out += m.available_backends
     return out
@@ -119,6 +123,8 @@ def model_name() -> str:
     - `xla-dist` for XLA distributed configuration
     - `horovod-dist` for Horovod distributed framework
 
+    .. versionchanged:: 0.4.2
+        `horovod-dist` will be returned for Horovod distributed framework.
     """
     if _need_to_sync and isinstance(_model, _SerialModel):
         sync(temporary=True)
@@ -190,8 +196,13 @@ def hostname() -> str:
 
 
 def spawn(
-    backend: str, fn: Callable, args: Tuple, kwargs_dict: Optional[Mapping] = None, nproc_per_node: int = 1, **kwargs
-):
+    backend: str,
+    fn: Callable,
+    args: Tuple,
+    kwargs_dict: Optional[Mapping] = None,
+    nproc_per_node: int = 1,
+    **kwargs: Any,
+) -> None:
     """Spawns ``nproc_per_node`` processes that run ``fn`` with ``args``/``kwargs_dict`` and initialize
     distributed configuration defined by ``backend``.
 
@@ -213,7 +224,7 @@ def spawn(
                 assert dist.get_world_size() == 4
 
                 device = idist.device()
-                assert device == torch.device("cuda:{}".format(local_rank))
+                assert device == torch.device(f"cuda:{local_rank}")
 
 
             idist.spawn("nccl", train_fn, args=(a, b, c), kwargs_dict={"d": 23}, nproc_per_node=4)
@@ -239,7 +250,7 @@ def spawn(
                 assert dist.get_world_size() == nnodes * nproc_per_node
 
                 device = idist.device()
-                assert device == torch.device("cuda:{}".format(local_rank))
+                assert device == torch.device(f"cuda:{local_rank}")
 
             idist.spawn(
                 "nccl",
@@ -273,30 +284,33 @@ def spawn(
             idist.spawn("xla-tpu", train_fn, args=(a, b, c), kwargs_dict={"d": 23}, nproc_per_node=8)
 
     Args:
-        backend (str): backend to use: `nccl`, `gloo`, `xla-tpu`, `horovod`
-        fn (function): function to called as the entrypoint of the spawned process.
+        backend: backend to use: `nccl`, `gloo`, `xla-tpu`, `horovod`
+        fn: function to called as the entrypoint of the spawned process.
             This function must be defined at the top level of a module so it can be pickled and spawned.
             This is a requirement imposed by multiprocessing. The function is called as ``fn(i, *args, **kwargs_dict)``,
             where `i` is the process index and args is the passed through tuple of arguments.
-        args (tuple): arguments passed to `fn`.
-        kwargs_dict (Mapping): kwargs passed to `fn`.
-        nproc_per_node (int): number of processes to spawn on a single node. Default, 1.
-        **kwargs: acceptable kwargs according to provided backend:
+        args: arguments passed to `fn`.
+        kwargs_dict: kwargs passed to `fn`.
+        nproc_per_node: number of processes to spawn on a single node. Default, 1.
+        kwargs: acceptable kwargs according to provided backend:
 
-            - | "nccl" or "gloo" : `nnodes` (default, 1), `node_rank` (default, 0), `master_addr`
-              | (default, "127.0.0.1"), `master_port` (default, 2222), `timeout` to `dist.init_process_group`_ function
+            - | "nccl" or "gloo" : ``nnodes`` (default, 1), ``node_rank`` (default, 0), ``master_addr``
+              | (default, "127.0.0.1"), ``master_port`` (default, 2222), ``init_method`` (default, "env://"),
+              | `timeout` to `dist.init_process_group`_ function
               | and kwargs for `mp.start_processes`_ function.
 
-            - | "xla-tpu" : `nnodes` (default, 1), `node_rank` (default, 0) and kwargs to `xmp.spawn`_ function.
+            - | "xla-tpu" : ``nnodes`` (default, 1), ``node_rank`` (default, 0) and kwargs to `xmp.spawn`_ function.
 
-            - | "horovod": `hosts` (default, None) and other kwargs to `hvd_run`_ function. Arguments `nnodes=1`
-              | and `node_rank=0` are tolerated and ignored, otherwise an exception is raised.
+            - | "horovod": ``hosts`` (default, None) and other kwargs to `hvd_run`_ function. Arguments ``nnodes=1``
+              | and ``node_rank=0`` are tolerated and ignored, otherwise an exception is raised.
 
     .. _dist.init_process_group: https://pytorch.org/docs/stable/distributed.html#torch.distributed.init_process_group
     .. _mp.start_processes: https://pytorch.org/docs/stable/multiprocessing.html#torch.multiprocessing.spawn
     .. _xmp.spawn: http://pytorch.org/xla/release/1.6/index.html#torch_xla.distributed.xla_multiprocessing.spawn
     .. _hvd_run: https://horovod.readthedocs.io/en/latest/api.html#module-horovod.run
 
+    .. versionchanged:: 0.4.2
+        ``backend`` now accepts `horovod` distributed framework.
     """
     _assert_backend(backend)
 
@@ -311,13 +325,13 @@ def spawn(
         )
 
 
-def all_reduce(tensor: Union[torch.Tensor, Number], op: str = "SUM") -> Union[torch.Tensor, Number]:
+def all_reduce(tensor: Union[torch.Tensor, float], op: str = "SUM") -> Union[torch.Tensor, float]:
     """Helper method to perform all reduce operation.
 
     Args:
-        tensor (torch.Tensor or number): tensor or number to collect across participating processes.
-        op (str): reduction operation, "SUM" by default. Possible values: "SUM", "PRODUCT", "MIN", "MAX", "AND", "OR".
-            Please, several values are not supported for the backend like "horovod".
+        tensor: tensor or number to collect across participating processes.
+        op: reduction operation, "SUM" by default. Possible values: "SUM", "PRODUCT", "MIN", "MAX", "AND", "OR".
+            Horovod backend supports only "SUM", "AVERAGE", "ADASUM", "MIN", "MAX", "PRODUCT".
 
     Returns:
         torch.Tensor or number
@@ -329,11 +343,11 @@ def all_reduce(tensor: Union[torch.Tensor, Number], op: str = "SUM") -> Union[to
     return _model.all_reduce(tensor, op)
 
 
-def all_gather(tensor: Union[torch.Tensor, Number, str]) -> Union[torch.Tensor, Number, List[str]]:
+def all_gather(tensor: Union[torch.Tensor, float, str]) -> Union[torch.Tensor, float, List[float], List[str]]:
     """Helper method to perform all gather operation.
 
     Args:
-        tensor (torch.Tensor or number or str): tensor or number or str to collect across participating processes.
+        tensor: tensor or number or str to collect across participating processes.
 
     Returns:
         torch.Tensor of shape ``(world_size * tensor.shape[0], tensor.shape[1], ...)`` if input is a tensor or
@@ -347,13 +361,21 @@ def all_gather(tensor: Union[torch.Tensor, Number, str]) -> Union[torch.Tensor, 
     return _model.all_gather(tensor)
 
 
-def broadcast(tensor: Union[torch.Tensor, Number, str], src: int = 0) -> Union[torch.Tensor, Number, str]:
+def broadcast(
+    tensor: Union[torch.Tensor, float, str, None], src: int = 0, safe_mode: bool = False
+) -> Union[torch.Tensor, float, str]:
     """Helper method to perform broadcast operation.
 
     Args:
-        tensor (torch.Tensor or number or str): tensor or number or str to broadcast to participating processes.
-            Make sure to respect dtype of torch tensor input for all processes, otherwise execution will crash.
-        src (int): source rank. Default, 0.
+        tensor: tensor or number or str to broadcast to participating processes.
+            Make sure to respect data type of torch tensor input for all processes, otherwise execution will crash.
+            Can use None for non-source data with ``safe_mode=True``.
+        src: source rank. Default, 0.
+        safe_mode: if True, non source input data can be ``None`` or anything (will be discarded), otherwise data
+            type of the input ``tensor`` should be respected for all processes. Please, keep in mind, this mode is
+            working only for dense tensors as source input if a tensor is provided. There are additional collective
+            ops are performed before doing the broadcast and, thus, can be slower than without using this mode.
+            Default, False.
 
     Returns:
         torch.Tensor or string or number
@@ -362,10 +384,12 @@ def broadcast(tensor: Union[torch.Tensor, Number, str], src: int = 0) -> Union[t
 
         .. code-block:: python
 
+            y = None
             if idist.get_rank() == 0:
                 t1 = torch.rand(4, 5, 6, device=idist.device())
                 s1 = "abc"
                 x = 12.3456
+                y = torch.rand(1, 2, 3, device=idist.device())
             else:
                 t1 = torch.empty(4, 5, 6, device=idist.device())
                 s1 = ""
@@ -383,14 +407,23 @@ def broadcast(tensor: Union[torch.Tensor, Number, str], src: int = 0) -> Union[t
             x = idist.broadcast(x, src=0)
             # >>> x = 12.3456
 
+            # Broadcast any of those types from rank 0,
+            # but other ranks do not define the placeholder
+            y = idist.broadcast(y, src=0, safe_mode=True)
+            assert isinstance(y, torch.Tensor)
+
+    .. versionadded:: 0.4.2
+
+    .. versionchanged:: 0.5.0
+        added ``safe_mode``
     """
     if _need_to_sync and isinstance(_model, _SerialModel):
         sync(temporary=True)
 
-    return _model.broadcast(tensor, src=src)
+    return _model.broadcast(tensor, src=src, safe_mode=safe_mode)
 
 
-def barrier():
+def barrier() -> None:
     """Helper method to synchronize all processes.
     """
     if _need_to_sync and isinstance(_model, _SerialModel):
@@ -399,9 +432,9 @@ def barrier():
     _model.barrier()
 
 
-def set_local_rank(index: int):
+def set_local_rank(index: int) -> None:
     """Method to hint the local rank in case if torch native distributed context is created by user
-    without using :meth:`~ignite.distributed.initialize` or :meth:`~ignite.distributed.spawn`.
+    without using :meth:`~ignite.distributed.utils.initialize` or :meth:`~ignite.distributed.utils.spawn`.
 
     Usage:
 
@@ -419,7 +452,7 @@ def set_local_rank(index: int):
                 # ...
 
     Args:
-        index (int): local rank or current process index
+        index: local rank or current process index
 
     """
     from ignite.distributed.comp_models.base import ComputationModel
@@ -427,7 +460,7 @@ def set_local_rank(index: int):
     ComputationModel._ext_local_rank = index
 
 
-def _set_model(model, temporary=False):
+def _set_model(model: Any, temporary: bool = False) -> None:
     global _model, _need_to_sync
     _model = model
     _need_to_sync = True
@@ -435,13 +468,13 @@ def _set_model(model, temporary=False):
         _need_to_sync = False
 
 
-def _assert_backend(backend):
+def _assert_backend(backend: str) -> None:
     backends = available_backends()
     if backend not in backends:
-        raise ValueError("Backend should be one of '{}'".format(backends))
+        raise ValueError(f"Backend should be one of '{backends}'")
 
 
-def initialize(backend: str, **kwargs):
+def initialize(backend: str, **kwargs: Any) -> None:
     """Initializes distributed configuration according to provided ``backend``
 
     Examples:
@@ -462,25 +495,36 @@ def initialize(backend: str, **kwargs):
                 assert dist.get_world_size() == 4
 
                 device = idist.device()
-                assert device == torch.device("cuda:{}".format(local_rank))
+                assert device == torch.device(f"cuda:{local_rank}")
 
 
-            idist.initialize("nccl")
+            backend = "nccl"  # or "gloo" or "horovod" or "xla-tpu"
+            idist.initialize(backend)
+            # or for torch native distributed on Windows:
+            # idist.initialize("nccl", init_method="file://tmp/shared")
             local_rank = idist.get_local_rank()
             train_fn(local_rank, a, b, c)
             idist.finalize()
 
 
     Args:
-        backend (str, optional): backend: `nccl`, `gloo`, `xla-tpu`, `horovod`.
-        **kwargs: acceptable kwargs according to provided backend:
+        backend: backend: `nccl`, `gloo`, `xla-tpu`, `horovod`.
+        kwargs: acceptable kwargs according to provided backend:
 
-            - "nccl" or "gloo" : timeout(=timedelta(minutes=30)).
+            - | "nccl" or "gloo" : ``timeout(=timedelta(minutes=30))``, ``init_method(=None)``,
+              | ``rank(=None)``, ``world_size(=None)``.
+              | By default, ``init_method`` will be "env://". See more info about parameters: `torch_init`_.
 
-            - "horovod" : comm(=None), more info: `hvd_init`_.
+            - | "horovod" : comm(=None), more info: `hvd_init`_.
 
+    .. _torch_init: https://pytorch.org/docs/stable/distributed.html#torch.distributed.init_process_group
     .. _hvd_init: https://horovod.readthedocs.io/en/latest/api.html#horovod.torch.init
 
+    .. versionchanged:: 0.4.2
+        ``backend`` now accepts `horovod` distributed framework.
+
+    .. versionchanged:: 0.5.0
+        ``kwargs`` now accepts ``init_method``, ``rank``, ``world_size`` for PyTorch native distributed backend.
     """
     if not (has_xla_support or has_native_dist_support or has_hvd_support):
         # nothing to do => serial model
@@ -495,7 +539,7 @@ def initialize(backend: str, **kwargs):
         _set_model(comp_model_cls(backend, **kwargs))
 
 
-def finalize():
+def finalize() -> None:
     """Finalizes distributed configuration. For example, in case of native pytorch distributed configuration,
     it calls ``dist.destroy_process_group()``.
     """
@@ -503,31 +547,31 @@ def finalize():
     _set_model(_SerialModel())
 
 
-def show_config():
+def show_config() -> None:
     """Helper method to display distributed configuration via ``logging``.
     """
 
     # setup parallel logger
     logger = setup_logger(__name__)
 
-    logger.info("distributed configuration: {}".format(model_name()))
-    logger.info("backend: {}".format(backend()))
-    logger.info("device: {}".format(device().type))
-    logger.info("hostname: {}".format(hostname()))
-    logger.info("world size: {}".format(get_world_size()))
-    logger.info("rank: {}".format(get_rank()))
-    logger.info("local rank: {}".format(get_local_rank()))
-    logger.info("num processes per_node: {}".format(get_nproc_per_node()))
-    logger.info("num nodes: {}".format(get_nnodes()))
-    logger.info("node rank: {}".format(get_node_rank()))
+    logger.info(f"distributed configuration: {model_name()}")
+    logger.info(f"backend: {backend()}")
+    logger.info(f"device: {device().type}")
+    logger.info(f"hostname: {hostname()}")
+    logger.info(f"world size: {get_world_size()}")
+    logger.info(f"rank: {get_rank()}")
+    logger.info(f"local rank: {get_local_rank()}")
+    logger.info(f"num processes per_node: {get_nproc_per_node()}")
+    logger.info(f"num nodes: {get_nnodes()}")
+    logger.info(f"node rank: {get_node_rank()}")
 
 
-def one_rank_only(rank: int = 0, with_barrier: bool = False):
+def one_rank_only(rank: int = 0, with_barrier: bool = False) -> Callable:
     """Decorator to filter handlers wrt a rank number
 
     Args:
-        rank (int): rank number of the handler (default: 0).
-        with_barrier (bool): synchronisation with a barrier (default: False).
+        rank: rank number of the handler (default: 0).
+        with_barrier: synchronisation with a barrier (default: False).
 
     .. code-block:: python
 
@@ -544,9 +588,9 @@ def one_rank_only(rank: int = 0, with_barrier: bool = False):
             ...
     """
 
-    def _one_rank_only(func):
+    def _one_rank_only(func: Callable) -> Callable:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Optional[Any]:
             ret = None
             if get_rank() == rank:
                 ret = func(*args, **kwargs)

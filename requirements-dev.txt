@@ -6,19 +6,23 @@ pytest-cov
 pytest-xdist
 dill
 # Test contrib dependencies
-tqdm<=4.48.0
+tqdm
 scikit-learn
 matplotlib
 tensorboardX
 visdom
+polyaxon
 polyaxon-client
 wandb
 mlflow
 neptune-client
 tensorboard
-pynvml; python_version > '3.5'
-trains>=0.15.1
-scikit-image>=0.15.0
+pynvml
+clearml
+scikit-image
+py-rouge
+nltk
 # Examples dependencies
 pandas
 gym
+mkl

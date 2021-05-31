@@ -1,7 +1,6 @@
-import warnings
 from abc import ABCMeta, abstractmethod
 from numbers import Number
-from typing import Callable, List, Optional, Union
+from typing import Any, Callable, List, Optional, Union, cast
 
 import torch
 
@@ -13,15 +12,15 @@ class ComputationModel(metaclass=ABCMeta):
     """
 
     # this is an additional local rank storage used when idist is setup from existing native torch dist context
-    _ext_local_rank = None
+    _ext_local_rank = None  # type: Optional[int]
 
-    def __init__(self):
-        self._backend = None
-        self._nproc_per_node = None
-        self._nnodes = None
-        self._node = None
+    def __init__(self) -> None:
+        self._backend = None  # type: Optional[str]
+        self._nproc_per_node = None  # type: Optional[int]
+        self._nnodes = None  # type: Optional[int]
+        self._node = None  # type: Optional[int]
 
-    def _setup_attrs(self):
+    def _setup_attrs(self) -> None:
         if self._nproc_per_node is None:
             self._nproc_per_node = self._compute_nproc_per_node() if self.get_world_size() > 1 else 1
         if self._nnodes is None:
@@ -66,7 +65,7 @@ class ComputationModel(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def finalize(self):
+    def finalize(self) -> None:
         pass
 
     @staticmethod
@@ -76,38 +75,89 @@ class ComputationModel(metaclass=ABCMeta):
 
     @staticmethod
     @abstractmethod
-    def create_from_backend(backend: str, **kwargs) -> "ComputationModel":
+    def create_from_backend(backend: str, **kwargs: Any) -> "ComputationModel":
         pass
 
     @staticmethod
     @abstractmethod
-    def spawn(*args, **kwargs):
+    def spawn(*args: Any, **kwargs: Any) -> None:
         pass
 
-    _collective_op_dtype = None
+    _collective_op_dtype = None  # type: Any
 
     @staticmethod
-    def _encode_str(x: str, device: torch.device) -> torch.Tensor:
-        # use fix padded size
-        size = 1024
-        if len(x) > size:
-            warnings.warn("Input string size {} is larger than {} and thus will be truncated".format(len(x), size))
-            x = x[:size]
-
+    def _encode_str(x: str, device: torch.device, size: int) -> torch.Tensor:
         name = torch.tensor(bytearray(x, "utf-8")).to(device)
         padded_x = torch.zeros(size + 1, device=device, dtype=torch.long)
         padded_x[: len(name)] = name
         padded_x[-1] = len(name)
-        # output is tensor of shape (1, 1025)
+        # output is tensor of shape (1, size + 1)
         return padded_x.unsqueeze(0)
+
+    def _get_max_length(self, x: str, device: torch.device) -> int:
+        size = torch.tensor([len(x),], device=device)
+        size = self._do_all_reduce(size, "MAX")
+        return cast(int, size.item())
+
+    @staticmethod
+    def _encode_input_data(x: Union[torch.Tensor, float, str, None], is_src: bool) -> List[int]:
+        encoded_msg = [-1] * 512
+        if not is_src:
+            # Discard input type if not source
+            return encoded_msg
+
+        if isinstance(x, torch.Tensor):
+            shape = x.shape
+            dtype = str(x.dtype)
+            msg = [0, len(shape), *shape, len(dtype), *list(bytearray(dtype, "utf-8"))]
+            encoded_msg[: len(msg)] = msg
+        elif isinstance(x, Number):
+            encoded_msg[0] = 1
+        elif isinstance(x, str):
+            encoded_msg[0] = 2
+        return encoded_msg
+
+    @staticmethod
+    def _decode_as_placeholder(encoded_msg: List[int], device: torch.device) -> Union[torch.Tensor, float, str]:
+        if encoded_msg[0] == 0:
+            len_shape = encoded_msg[1]
+            le = 2 + len_shape
+            shape = encoded_msg[2:le] if len_shape > 0 else []
+            len_dtype = encoded_msg[le]
+            dtype_str = bytearray(encoded_msg[le + 1 : le + 1 + len_dtype]).decode("utf-8")
+            dtype = eval(dtype_str)
+            return torch.empty(shape, device=device, dtype=dtype)
+        elif encoded_msg[0] == 1:
+            return 0.0
+        elif encoded_msg[0] == 2:
+            return ""
+        else:
+            raise RuntimeError(f"Internal error: unhandled dtype {encoded_msg[0]}, encoded_msg={encoded_msg}")
+
+    def _setup_placeholder(
+        self, x: Union[torch.Tensor, float, str, None], device: torch.device, is_src: bool
+    ) -> Union[torch.Tensor, float, str]:
+
+        encoded_msg_per_rank = self._encode_input_data(x, is_src)
+        encoded_msg_all_ranks = self._do_all_reduce(torch.tensor(encoded_msg_per_rank, device=device), "MAX")
+
+        if is_src:
+            if x is None:
+                raise RuntimeError("Internal error, x is None. Please, file an issue if you encounter this error.")
+            return x
+
+        encoded_msg = encoded_msg_all_ranks.cpu().tolist()
+        return self._decode_as_placeholder(encoded_msg, device)
 
     @staticmethod
     def _decode_str(xs: torch.Tensor) -> List[str]:
-        # xs.shape = (n, 1025), e.g. (world_size, 1025)
+        # xs.shape = (n, size + 1), e.g. (world_size, size + 1)
         out = [bytearray(x[: x[-1]].tolist()).decode("utf-8") for x in xs]
         return out
 
-    def _apply_op(self, tensor: torch.Tensor, device: torch.device, fn: Callable, *args, **kwargs) -> torch.Tensor:
+    def _apply_op(
+        self, tensor: torch.Tensor, device: torch.device, fn: Callable, *args: Any, **kwargs: Any
+    ) -> torch.Tensor:
         out_dtype = None
         tensor_device = None
 
@@ -133,58 +183,76 @@ class ComputationModel(metaclass=ABCMeta):
         return tensor
 
     def _collective_op(
-        self, tensor: Union[torch.Tensor, Number, str], fn: Callable, *args, **kwargs
-    ) -> Union[torch.Tensor, Number, List[str]]:
+        self, tensor: Union[torch.Tensor, float, str], fn: Callable, *args: Any, **kwargs: Any
+    ) -> Union[torch.Tensor, float, List[float], List[str]]:
         tensor_to_number = tensor_to_str = False
         device = self.device()
-        if isinstance(tensor, Number):
+        if isinstance(tensor, (Number, float)):
             tensor_to_number = True
             tensor = torch.tensor(tensor, device=device, dtype=self._collective_op_dtype)
         elif isinstance(tensor, str):
             tensor_to_str = True
-            tensor = self._encode_str(tensor, device)
+            max_length = self._get_max_length(tensor, device)
+            tensor = self._encode_str(tensor, device, size=max_length)
 
         tensor = self._apply_op(tensor, device, fn, *args, **kwargs)
 
-        if tensor_to_number and tensor.numel() == 1:
-            return tensor.item()
+        if tensor_to_number:
+            if tensor.numel() == 1:
+                return tensor.item()
+            else:
+                return tensor.tolist()
         elif tensor_to_str:
             return self._decode_str(tensor)
         return tensor
 
-    def all_reduce(self, tensor: Union[torch.Tensor, Number], op: str = "sum") -> Union[torch.Tensor, Number]:
+    def all_reduce(self, tensor: Union[torch.Tensor, float], op: str = "sum") -> Union[torch.Tensor, float]:
         if not isinstance(tensor, (torch.Tensor, Number)):
-            raise TypeError("Unhandled input type {}".format(type(tensor)))
+            raise TypeError(f"Unhandled input type {type(tensor)}")
 
-        return self._collective_op(tensor, self._do_all_reduce, op)
+        return cast(Union[torch.Tensor, float], self._collective_op(tensor, self._do_all_reduce, op))
 
-    def all_gather(self, tensor: Union[torch.Tensor, Number, str]) -> Union[torch.Tensor, Number, List[str]]:
+    def all_gather(self, tensor: Union[torch.Tensor, float, str]) -> Union[torch.Tensor, float, List[float], List[str]]:
         if not isinstance(tensor, (torch.Tensor, Number, str)):
-            raise TypeError("Unhandled input type {}".format(type(tensor)))
+            raise TypeError(f"Unhandled input type {type(tensor)}")
 
         return self._collective_op(tensor, self._do_all_gather)
 
-    def broadcast(self, tensor: Union[torch.Tensor, Number, str], src: int = 0) -> Union[torch.Tensor, Number, str]:
-        if not isinstance(tensor, (torch.Tensor, Number, str)):
-            raise TypeError("Unhandled input type {}".format(type(tensor)))
+    def broadcast(
+        self, tensor: Union[torch.Tensor, float, str, None], src: int = 0, safe_mode: bool = False
+    ) -> Union[torch.Tensor, float, str]:
+        if not (isinstance(tensor, (torch.Tensor, Number, str)) or tensor is None):
+            raise TypeError(f"Unhandled input type {type(tensor)}")
 
         rank = self.get_rank()
+        if tensor is None:
+            if rank == src:
+                raise ValueError("Source data can not be None")
+            elif not safe_mode:
+                raise ValueError("Argument safe_mode should be True if None is passed for non src rank")
+
         device = self.device()
         tensor_to_number = tensor_to_str = False
-        if rank != src:
-            if isinstance(tensor, Number):
-                tensor_to_number = True
-                tensor = torch.empty(1, device=self.device(), dtype=torch.float)
-            elif isinstance(tensor, str):
-                tensor_to_str = True
-                tensor = torch.empty(1, 1025, device=self.device(), dtype=torch.long)
-        else:
-            if isinstance(tensor, Number):
-                tensor_to_number = True
+
+        if safe_mode:
+            tensor = self._setup_placeholder(tensor, device, rank == src)
+
+        if tensor is None:
+            raise RuntimeError("Internal error, tensor is None. Please, file an issue if you encounter this error.")
+
+        if isinstance(tensor, (Number, float)):  # have to use Number and float to satisfy mypy
+            tensor_to_number = True
+            if rank != src:
+                tensor = torch.empty(1, device=device, dtype=torch.float)
+            else:
                 tensor = torch.tensor([tensor,], device=device, dtype=torch.float)
-            elif isinstance(tensor, str):
-                tensor_to_str = True
-                tensor = self._encode_str(tensor, device)
+        elif isinstance(tensor, str):
+            tensor_to_str = True
+            max_length = self._get_max_length(tensor, device)
+            if rank != src:
+                tensor = torch.empty(1, max_length + 1, device=device, dtype=torch.long)
+            else:
+                tensor = self._encode_str(tensor, device, size=max_length)
 
         tensor = self._apply_op(tensor, device, self._do_broadcast, src)
 
@@ -196,7 +264,7 @@ class ComputationModel(metaclass=ABCMeta):
         return tensor
 
     @abstractmethod
-    def _do_all_reduce(self, tensor: torch.Tensor, op: str = "sum") -> torch.Tensor:
+    def _do_all_reduce(self, tensor: torch.Tensor, op: str = "SUM") -> torch.Tensor:
         pass
 
     @abstractmethod
@@ -208,7 +276,7 @@ class ComputationModel(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def barrier(self):
+    def barrier(self) -> None:
         pass
 
 
@@ -218,6 +286,9 @@ class _SerialModel(ComputationModel):
 
     name = "serial"
     available_backends = ()
+
+    def __init__(self, _backend: Optional[str] = None, **kwargs: Any) -> None:
+        super(_SerialModel, self).__init__()
 
     def get_local_rank(self) -> int:
         return 0
@@ -242,10 +313,10 @@ class _SerialModel(ComputationModel):
             return torch.device("cuda")
         return torch.device("cpu")
 
-    def backend(self) -> None:
+    def backend(self) -> Optional[str]:
         return None
 
-    def finalize(self):
+    def finalize(self) -> None:
         pass
 
     def _compute_nproc_per_node(self) -> int:
@@ -256,30 +327,36 @@ class _SerialModel(ComputationModel):
         return _SerialModel()
 
     @staticmethod
-    def create_from_backend(backend: Optional[str] = None, **kwargs) -> "_SerialModel":
+    def create_from_backend(backend: Optional[str] = None, **kwargs: Any) -> "_SerialModel":
         return _SerialModel()
 
     @staticmethod
-    def spawn(*args, **kwargs):
+    def spawn(*args: Any, **kwargs: Any) -> None:
         raise NotImplementedError("Serial computation model does not implement spawn method")
 
-    def all_reduce(self, tensor: Union[torch.Tensor, Number], op: str = "sum") -> Union[torch.Tensor, Number]:
+    def all_reduce(self, tensor: Union[torch.Tensor, float], op: str = "SUM") -> Union[torch.Tensor, float]:
         return tensor
 
-    def all_gather(self, tensor: Union[torch.Tensor, Number]) -> Union[torch.Tensor, Number]:
+    def all_gather(self, tensor: Union[torch.Tensor, float, str]) -> Union[torch.Tensor, float, List[float], List[str]]:
+        if isinstance(tensor, torch.Tensor):
+            return tensor
+        return cast(Union[List[float], List[str]], [tensor])
+
+    def broadcast(
+        self, tensor: Union[torch.Tensor, float, str, None], src: int = 0, safe_mode: bool = False
+    ) -> Union[torch.Tensor, float, str]:
+        if tensor is None:
+            raise ValueError("Argument tensor should not be None")
         return tensor
 
-    def broadcast(self, tensor: Union[torch.Tensor, Number, str], src: int = 0) -> Union[torch.Tensor, Number, str]:
+    def _do_all_reduce(self, tensor: torch.Tensor, op: str = "SUM") -> torch.Tensor:
         return tensor
-
-    def _do_all_reduce(self, tensor: torch.Tensor, op: str = "sum") -> torch.Tensor:
-        pass
 
     def _do_all_gather(self, tensor: torch.Tensor) -> torch.Tensor:
-        pass
+        return tensor
 
     def _do_broadcast(self, tensor: torch.Tensor, src: int) -> torch.Tensor:
-        pass
+        return tensor
 
-    def barrier(self):
+    def barrier(self) -> None:
         pass
